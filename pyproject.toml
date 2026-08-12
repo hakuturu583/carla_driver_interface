@@ -69,6 +69,9 @@ select = ["E", "F", "I", "UP", "B"]
 "src/carla_driver_interface/driver/base.py" = ["B027"]
 
 [tool.mypy]
-python_version = "3.11"
+# Deliberately not pinning `python_version`: mypy then analyses against the
+# interpreter it is running under, which is the one whose site-packages it is
+# reading. Pinning 3.11 while the venv is 3.12 makes mypy reject numpy's own
+# stubs, which use PEP 695 `type` statements.
 ignore_missing_imports = true
 exclude = "src/carla_driver_interface/grpc_api/carla_driver/"

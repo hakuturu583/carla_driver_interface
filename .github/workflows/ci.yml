@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # alpasim-grpc pins requires-python to >=3.11,<3.13.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        # `carla` is deliberately not installed: the whole closed loop is
+        # exercised through the FakeWorld adapter instead.
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Closed-loop smoke test
+        run: |
+          uv run carla-driver-interface serve --policy route_follower --port 50251 &
+          sleep 5
+          uv run carla-driver-interface demo --driver localhost:50251 --steps 200
+
+      - name: Compatibility report
+        run: uv run carla-driver-interface compat-report

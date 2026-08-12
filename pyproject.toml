@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "carla-driver-interface"
+version = "0.1.0"
+description = "alpasim-compatible egodriver gRPC module and a CARLA closed-loop runtime"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Apache-2.0" }
+
+# Deliberately small. `alpasim-grpc` brings grpcio/protobuf/numpy transitively, but
+# we pin them here too so the contract is visible without reading upstream metadata.
+dependencies = [
+  "alpasim-grpc @ git+https://github.com/NVlabs/alpasim@68709245a5dc0f2eda4f8cb2c3aa8cbdfa913043#subdirectory=src/grpc",
+  "grpcio>=1.60",
+  "protobuf>=4.0.0,<5.0.0",
+  "numpy>=1.24",
+  "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# CARLA 0.9.x publishes wheels on PyPI (0.9.16 supports cpython 3.11).
+# CARLA 0.10.x ships its own PythonAPI instead; point at it with
+# `--carla-python-path` and skip this extra.
+carla = ["carla>=0.9.15,<0.10"]
+dev = ["pytest>=8", "grpcio-tools>=1.60", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+carla-driver-interface = "carla_driver_interface.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/carla_driver_interface"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/carla_driver_interface",
+  "proto",
+  "scripts",
+  "README.md",
+  "docs",
+]
+
+[tool.hatch.metadata]
+# Required for the `alpasim-grpc @ git+...` direct reference.
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Generated protobuf modules are committed verbatim; formatting them would make
+# them differ from a fresh `compile_protos` run.
+extend-exclude = ["src/carla_driver_interface/grpc_api/carla_driver"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated protobuf code.
+"src/carla_driver_interface/grpc_api/carla_driver/**" = ["ALL"]
+# BaseDriver's observation hooks are deliberately optional no-ops: a policy only
+# has to implement `drive`. Marking them abstract would force every policy to
+# stub out six methods it does not care about.
+"src/carla_driver_interface/driver/base.py" = ["B027"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+exclude = "src/carla_driver_interface/grpc_api/carla_driver/"

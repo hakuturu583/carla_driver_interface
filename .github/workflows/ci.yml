@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # alpasim-grpc pins requires-python to >=3.11,<3.13.
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        # `carla` is deliberately not installed: the whole closed loop is
+        # exercised through the FakeWorld adapter instead.
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Closed-loop smoke test
+        # Exercises the CLI wiring that `pytest` does not: two real processes
+        # talking over a real socket.
+        run: |
+          set -euo pipefail
+
+          uv run carla-driver-interface serve --policy route_follower --port 50251 &
+          server=$!
+          # The runner kills leftover background processes at job teardown and
+          # attributes their exit status to this step, so the server has to be
+          # reaped here rather than left running.
+          trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+
+          # Poll the port rather than sleeping a fixed amount: a fixed sleep is
+          # either too short on a slow runner or wasted time on a fast one.
+          for _ in $(seq 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/50251) 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+
+          uv run carla-driver-interface demo --driver localhost:50251 --steps 200
+
+      - name: Compatibility report
+        run: uv run carla-driver-interface compat-report

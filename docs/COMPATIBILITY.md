@@ -1,134 +1,154 @@
-# alpasim との互換性 / Compatibility with alpasim
+# Compatibility with alpasim
 
-対象 upstream: [NVlabs/alpasim](https://github.com/NVlabs/alpasim) `68709245a5dc0f2eda4f8cb2c3aa8cbdfa913043`
-(`alpasim_grpc` 0.55.0)
+Tracked upstream: [NVlabs/alpasim](https://github.com/NVlabs/alpasim)
+`68709245a5dc0f2eda4f8cb2c3aa8cbdfa913043` (`alpasim_grpc` 0.55.0).
 
-このドキュメントは散文だが、**同じ内容が
-[`src/carla_driver_interface/compat.py`](../src/carla_driver_interface/compat.py) に機械可読な形で
-入っている**。両者がずれると `tests/test_proto_compat.py::test_compat_entries_are_mirrored_in_the_docs`
-が落ちる。手元で確認するには:
+This document is prose, but **the same content exists in machine-readable form
+in [`src/carla_driver_interface/compat.py`](../src/carla_driver_interface/compat.py)**.
+If the two disagree,
+`tests/test_proto_compat.py::test_compat_entries_are_mirrored_in_the_docs`
+fails. To read it yourself:
 
 ```console
 $ uv run carla-driver-interface compat-report
 $ uv run carla-driver-interface compat-report --json
 ```
 
-互換度の語彙:
+The vocabulary:
 
-| レベル | 意味 |
+| level | meaning |
 |---|---|
-| **exact** | upstream と同一。テストで検証済み |
-| **partial** | 同じメッセージだが挙動が狭い / 意味が違う |
-| **structural** | driver から見た契約は同じ。裏の実装が別物 |
-| **extension** | upstream が用意した拡張点に載せた追加情報。無視しても壊れない |
-| **unimplemented** | upstream にあってこちらに無い |
+| **exact** | Identical to upstream, and tested |
+| **partial** | Same messages, narrower behaviour or different meaning |
+| **structural** | Same contract as seen by the driver; different implementation behind it |
+| **extension** | Extra information carried in an extension point upstream already provides. Ignoring it is safe |
+| **unimplemented** | Present upstream, absent here |
 
 ---
 
-## exact — 完全互換
+## exact — identical to upstream
 
 | Area | alpasim | carla_driver_interface |
 |---|---|---|
-| **Egodriver service** | `egodriver.EgodriverService` の 8 RPC | upstream 生成 servicer を継承して 8 本すべて実装。サービスパス `/egodriver.EgodriverService/*` もメッセージ型も同一 |
-| **Message types** | `alpasim_grpc` で定義 | 同パッケージを rev 固定の git 依存として使用。メッセージを一つも再定義しない |
-| **Observation ordering** | 画像 → egomotion → route → GT を送り切ってバリア、その後 `drive()` | 同じ順序・同じバリア |
-| **Response frame** | `DriveResponse.trajectory` は `local -> rig_est`、先頭が `time_now_us` の自車 pose | 同一。servicer が `time_now_us` の自車 pose を anchor にして rig→local 変換する |
-| **Early termination** | `DriveResponse.terminate_session` で即終了 | 対応。残りのステップを実行せずに抜ける |
-| **API version** | `get_version` が `alpasim_grpc.API_VERSION_MESSAGE` を返す | そのまま転送。runtime 側は起動時に照合し、不一致なら警告 |
-| **Rollout results** | `SimulationReturn.RolloutReturn` | 同じメッセージを生成するので alpasim 側ツールでそのまま読める |
+| **Egodriver service** | 8 RPCs on `egodriver.EgodriverService` | All 8 implemented by inheriting the upstream generated servicer. Service path `/egodriver.EgodriverService/*` and message types are the same |
+| **Message types** | Defined in `alpasim_grpc` | The same package, as a rev-pinned git dependency. Not one message is redefined |
+| **Observation ordering** | Images, egomotion, route and ground truth all land before `drive()`, enforced by an explicit barrier | Same order, same barrier |
+| **Response frame** | `DriveResponse.trajectory` holds `local -> rig_est`, led by the ego pose at `time_now_us` | Identical: the servicer anchors the plan on the ego pose at `time_now_us` |
+| **Early termination** | `DriveResponse.terminate_session` ends the rollout immediately | Honoured: the loop returns without stepping further |
+| **API version** | `get_version` reports `alpasim_grpc.API_VERSION_MESSAGE` | Forwarded verbatim; the runtime compares it at startup and warns on a mismatch |
+| **Rollout results** | `SimulationReturn.RolloutReturn` | The same message is produced, so alpasim-side tooling can read a CARLA rollout unchanged |
 
-**なぜ壊れないか**: servicer は `alpasim_grpc.v0.egodriver_pb2_grpc.EgodriverServiceServicer` を
-Python 継承している。ダックタイピングではないので、upstream が RPC を増やせば
-`test_all_upstream_rpcs_exist_and_are_implemented` が落ちて気付ける。
+**Why this cannot quietly break.** The servicer inherits
+`alpasim_grpc.v0.egodriver_pb2_grpc.EgodriverServiceServicer` by Python
+inheritance, not by duck typing. If upstream adds an RPC,
+`test_all_upstream_rpcs_exist_and_are_implemented` fails rather than the new
+method silently returning `UNIMPLEMENTED`.
 
 ---
 
-## partial — メッセージは同じ、挙動が違う
+## partial — same messages, different behaviour
 
 | Area | alpasim | carla_driver_interface |
 |---|---|---|
-| **Camera model** | ftheta / OpenCV fisheye / OpenCV pinhole | **pinhole のみ** (`OpenCVPinholeCameraParam`)。CARLA は理想 pinhole を描画するので ftheta 係数を正直に埋められない。歪み係数は空のまま置く |
-| **Shutter** | ローリングシャッター (`frame_start_us` != `frame_end_us`) | **グローバルシャッター** (`frame_start_us` == `frame_end_us`)。`ShutterType.GLOBAL` |
-| **Recording ground truth** | `submit_recording_ground_truth` は実車の走行記録 | 記録が存在しない。**既定で送らない**。`send_ground_truth=True` にすると route 参照軌跡を送るが、これは別物 |
-| **Egomotion error model** | 自己位置推定誤差モデルで `rig_est` が `rig` からずれる | 既定は恒等。`egomotion_position_noise_m` / `egomotion_yaw_noise_rad` でガウスノイズを入れると、ずれと runtime 側の補正の両方が upstream と同じ経路で再現される |
-| **scene_id** | 録画クリップの UUID | `"<map>:<scenario>"`。同定すべき録画が無い |
+| **Camera model** | ftheta, OpenCV fisheye and OpenCV pinhole | **Pinhole only** (`OpenCVPinholeCameraParam`). CARLA renders an ideal pinhole, so ftheta coefficients cannot be filled in honestly. Distortion coefficients are left empty rather than faked |
+| **Shutter** | Rolling shutter; `frame_start_us` and `frame_end_us` bracket the sweep | **Global shutter**; `frame_start_us == frame_end_us`, `ShutterType.GLOBAL` |
+| **Recording ground truth** | `submit_recording_ground_truth` carries the real car's recorded path | No recording exists. **Off by default.** With `send_ground_truth=True` it sends the route reference instead, which is a different quantity |
+| **Egomotion error model** | `rig_est` diverges from `rig` via a proprioceptive noise model | Identity by default. `egomotion_position_noise_m` / `egomotion_yaw_noise_rad` reproduce both the divergence and the runtime-side correction, through the same code path upstream uses |
+| **scene_id** | UUID of a recorded clip | `"<map>:<scenario>"` — there are no recordings to identify |
 
-ftheta を要求する driver（alpasim の `alpasim_driver` は rectification に使う）は、
-CARLA 側の pinhole を受け取ることになる。多くの実装では pinhole が rectification のターゲット
-形式なので実害は小さいが、ftheta 前提のコードパスは通らない。
+A driver that requires ftheta (alpasim's own `alpasim_driver` uses it for
+rectification) will receive CARLA's pinhole. For most implementations pinhole is
+the rectification *target*, so the practical impact is small — but the
+ftheta-specific code path is not exercised.
 
 ---
 
-## structural — 契約は同じ、実装が別物
+## structural — same contract, different implementation
 
 | Area | alpasim | carla_driver_interface |
 |---|---|---|
-| **Renderer** | `SensorsimService`: NRE ニューラル再構成を gRPC 越しに | CARLA のラスタライザを in-process で。sensorsim の RPC は一度も呼ばない。カメラ記述のためにメッセージ型だけ再利用する |
-| **Controller / vehicle model** | `VDCService` を gRPC 越しに呼んで軌道を運動に変換 | in-process の pure pursuit + 速度 PID。その先は CARLA 自身の車両ダイナミクス |
-| **Physics** | `PhysicsService` が地面交差補正 | CARLA の物理エンジンが接地を保つので RPC 不要 |
-| **Traffic** | `TrafficService` が他エージェントを模擬 | CARLA TrafficManager |
-| **Coordinate frames** | 右手系 ENU の `local`、rig 原点は後輪軸中心の接地投影 | CARLA は左手系で actor 原点が車両中心。変換層が y を反転し、rig を後輪軸へずらす |
-| **Orchestration** | asyncio の `RuntimeService` デーモン。多数 rollout を driver レプリカに負荷分散 | 同期の in-process クラスで 1 rollout。並列化は呼び出し側の責任 |
+| **Renderer** | `SensorsimService`: NRE neural reconstruction over gRPC | CARLA's rasterizer, in process. The sensorsim RPCs are never called; only its message types are reused, to describe cameras |
+| **Controller / vehicle model** | `VDCService` over gRPC turns the plan into motion | In-process pure pursuit plus a speed PID, with CARLA's own vehicle dynamics behind it |
+| **Physics** | `PhysicsService` performs ground-intersection correction | CARLA's physics engine keeps the vehicle on the ground; no RPC needed |
+| **Traffic** | `TrafficService` simulates other agents | CARLA TrafficManager |
+| **Coordinate frames** | Right-handed ENU `local` frame; rig origin at the rear axle centre projected onto the ground | CARLA is left-handed with the actor origin at the vehicle centre. The conversion layer mirrors y and shifts to the rear axle |
+| **Orchestration** | Asyncio `RuntimeService` daemon, many concurrent rollouts, load balanced across driver replicas | A synchronous in-process class running one rollout. Concurrency is the caller's problem |
 
-### 座標変換の詳細
+### The coordinate conversion in detail
 
-CARLA: x 前 / **y 右** / z 上、回転は度の `(pitch, yaw, roll)`。
-alpasim: 右手系、rig は x 前 / **y 左** / z 上。
+CARLA: x forward, **y right**, z up; rotations as degrees `(pitch, yaw, roll)`.
+alpasim: right-handed, rig is x forward, **y left**, z up.
 
 ```
-位置: (x, y, z)          -> (x, -y, z)
-回転: (pitch, yaw, roll) -> (-pitch, -yaw, roll)   [度 -> ラジアン]
+position:  (x, y, z)          -> (x, -y, z)
+rotation:  (pitch, yaw, roll) -> (-pitch, -yaw, roll)   [degrees -> radians]
 ```
 
-これは y 軸に関する鏡映 `M = diag(1,-1,1)` で `R_alpasim = M R_carla M` と書ける。
-`tests/test_conversions.py::test_rotation_matches_the_mirrored_carla_matrix` が、
-CARLA 本家の `Transform.get_matrix()` を再現した行列と突き合わせて検証している。
+This is the mirror `M = diag(1, -1, 1)` about the y axis, i.e.
+`R_alpasim = M R_carla M`.
+`tests/test_conversions.py::test_rotation_matches_the_mirrored_carla_matrix`
+checks it against a reproduction of CARLA's own `Transform.get_matrix()` rather
+than against our reasoning about it.
 
-**rig 原点**: `RuntimeConfig.rear_axle_offset_m` で明示指定できる。未指定なら
-`get_physics_control().wheels` から導出するが、**CARLA 0.9.x では
-`WheelPhysicsControl.position` はワールド座標かつセンチメートル**という癖があるため、
-導出値は必ず起動時にログへ出す。値が怪しければ config で上書きすること。
+**Rig origin.** Set it explicitly with `RuntimeConfig.rear_axle_offset_m`. Left
+unset, it is derived from `get_physics_control().wheels` — but in CARLA 0.9.x
+`WheelPhysicsControl.position` is reported in **world coordinates,
+centimetres**, so the derived value is easy to get wrong. It is always logged at
+startup; if it looks implausible, override it.
+
+Every adapter builds camera mounts through `conversions.camera_pose_in_rig`.
+Doing the mirror by hand is how a mount rotation gets dropped — a bare `-y` on
+the position looks right for a forward camera and silently turns a side camera
+into a forward one.
 
 ---
 
-## extension — upstream の拡張点に載せた追加情報
+## extension — additions carried in upstream's extension points
 
 | Area | alpasim | carla_driver_interface |
 |---|---|---|
-| **Renderer payload** | `DriveRequest.renderer_data` は自由形式（NRE 固有） | `carla_driver.v0.CarlaRendererData` をシリアライズして格納（map / weather / 信号 / 制限速度 / 他 actor）。無視する driver には影響なし |
-| **Driver debug payload** | `DebugInfo.unstructured_debug_info` は自由形式 | `carla_driver.v0.CarlaDriveDebugInfo` を格納 |
+| **Renderer payload** | `DriveRequest.renderer_data` is free-form and NRE-specific | Carries a serialized `carla_driver.v0.CarlaRendererData`: map, weather, traffic light, speed limit, other actors. Drivers that ignore it are unaffected |
+| **Driver debug payload** | `DebugInfo.unstructured_debug_info` is free-form | Carries a serialized `carla_driver.v0.CarlaDriveDebugInfo` |
 
-`proto/carla_driver/v0/carla_driver.proto` は **service を一つも定義しない**。
-定義すれば driver と話す二つ目の非互換な経路ができてしまう
-(`test_our_proto_declares_no_service` が防いでいる)。
-拡張メッセージは upstream 型を `import` して合成する（コピーしない）ので、
-`CarlaDriveSessionInfo.base` の型は upstream の `egodriver.DriveSessionRequest` そのもの。
+`proto/carla_driver/v0/carla_driver.proto` **declares no service at all**.
+Declaring one would create a second, incompatible way to talk to a driver;
+`test_our_proto_declares_no_service` prevents it. The extension messages
+`import` upstream types and compose them rather than copying, so
+`CarlaDriveSessionInfo.base` *is* upstream's `egodriver.DriveSessionRequest`.
 
-パースは寛容にしてある: upstream の runtime が `renderer_data` に別のものを入れてきても、
-driver 側は `None` として扱って走り続ける (`test_foreign_renderer_data_is_ignored_not_fatal`)。
+Unpacking is deliberately tolerant. An upstream alpasim runtime may put
+something else entirely in `renderer_data`; the driver treats an unparseable
+payload as "no CARLA data" and keeps driving
+(`test_foreign_renderer_data_is_ignored_not_fatal`). Both directions share one
+codec, `grpc_api/extension.py`, so the two ends cannot drift apart on that
+policy.
 
 ---
 
-## unimplemented — upstream にあってこちらに無い
+## unimplemented — present upstream, absent here
 
 | Area | alpasim | carla_driver_interface |
 |---|---|---|
-| **Structured logging** | `logging.proto` が全 request/response を ASL ログへ記録 | 未実装。標準 `logging` モジュールのみ |
-| **Video model** | `video_model.proto` で生成動画モデルを駆動 | 未実装 |
-| **LiDAR** | `SensorsimService.render_lidar` | 未実装。**egodriver の契約に LiDAR 送信 RPC が無い**ので、生成しても届け先が無い |
-| **Runtime gRPC surface** | `RuntimeService.simulate` / `prefetch_scene` / `get_runtime_info` / `shut_down` | gRPC サーバとしては提供しない。`CarlaRuntime` は Python クラスとして使う |
+| **Structured logging** | `logging.proto` records every request and response into an ASL log | Not implemented; the runtime logs through the standard `logging` module |
+| **Video model** | `video_model.proto` drives a generative video model | Not implemented |
+| **LiDAR** | `SensorsimService.render_lidar` produces point clouds | Not implemented — **the egodriver contract has no LiDAR submission RPC**, so there would be nowhere to deliver it |
+| **Runtime gRPC surface** | `RuntimeService.simulate` / `prefetch_scene` / `get_runtime_info` / `shut_down` | Not served; `CarlaRuntime` is used as a Python class |
 
 ---
 
-## 相互運用の実際
+## Interoperability in practice
 
-**この driver を alpasim runtime から使う**: そのまま動くはず。サービス名・メッセージ・
-observation の順序が同一で、`get_version` も upstream の API バージョンを返す。
-ただし CARLA 拡張は届かないので、`RouteFollowerPolicy` は信号や制限速度を見ずに走る。
+**Driving this driver from an alpasim runtime.** It should work as-is: the
+service name, the messages and the observation ordering are the same, and
+`get_version` reports upstream's API version. The CARLA extension simply will
+not arrive, so `RouteFollowerPolicy` drives without seeing traffic lights or
+speed limits.
 
-**alpasim の driver を `CarlaRuntime` から使う**: `alpasim_driver` を別プロセスで立て、
-`--driver <host>:<port>` を指すだけ。上の partial 項目（pinhole のみ・グローバルシャッター・
-GT 無し）が効いてくるので、ftheta 前提のモデルは事前に確認すること。
+**Driving an alpasim driver from `CarlaRuntime`.** Run `alpasim_driver` in its
+own process and point `--driver <host>:<port>` at it. The *partial* rows above
+apply — pinhole only, global shutter, no recorded ground truth — so check any
+model that assumes ftheta before relying on the result.
 
-**同一プロセスで本家 `alpasim_grpc` と共存**: 問題ない。本家をそのまま依存として使っており、
-descriptor を複製していないため。
+**Both packages in one process.** Fine. Upstream `alpasim_grpc` is used as a
+dependency and its descriptors are never duplicated, so nothing collides in the
+descriptor pool.

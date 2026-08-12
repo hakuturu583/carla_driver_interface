@@ -543,6 +543,24 @@ class CarlaWorldAdapter:
         return mapping.get(str(light.get_state()), TrafficLightState.TRAFFIC_LIGHT_STATE_UNKNOWN)
 
     def _traffic_light_distance(self, light: Any | None, ego: EgoState) -> float:
+        """Distance the ego still has to travel before the stop line.
+
+        Measured **along the ego's heading**, not as a straight-line distance,
+        and negative once the line is behind.  The difference matters: a
+        Euclidean distance starts growing again the moment the ego crosses the
+        line, so a policy reading it cannot tell "1 m to go" from "1 m past",
+        and ``is_at_traffic_light`` stays true throughout the trigger volume.
+
+        A policy that stops inside that volume therefore never leaves it, and
+        is told forever that there is a stop line ahead which it has in fact
+        already crossed -- a deadlock, and one that only appears when the
+        policy does the right thing and stops.
+
+        Returning a negative value here matches what the field already means
+        elsewhere: ``CarlaRendererData.ego_traffic_light_distance_m`` is
+        documented as negative when no stop line applies to the ego, and once
+        the line is behind, none does.
+        """
         if light is None:
             return -1.0
         waypoints = light.get_stop_waypoints()
@@ -551,8 +569,15 @@ class CarlaWorldAdapter:
             stop_points = [carla_vector_to_local(location.x, location.y, location.z)]
         else:
             stop_points = [self._waypoint_to_local(wp) for wp in waypoints]
-        ego_position = ego.pose_local_to_rig.position
-        return float(min(np.linalg.norm(np.asarray(p) - ego_position) for p in stop_points))
+
+        # Resolve into the rig frame, whose +x is straight ahead.
+        to_rig = ego.pose_local_to_rig.inverse()
+        longitudinal = to_rig.transform_points(np.asarray(stop_points, dtype=np.float64))[:, 0]
+
+        # The nearest line still ahead governs us; if they are all behind, the
+        # nearest of those does, so the value stays continuous as we cross.
+        ahead = longitudinal[longitudinal >= 0.0]
+        return float(ahead.min()) if len(ahead) else float(longitudinal.max())
 
     def _speed_limit_mps(self) -> float:
         return float(self._ego.get_speed_limit() or 0.0) / 3.6  # CARLA reports km/h
@@ -595,6 +620,25 @@ class CarlaWorldAdapter:
     # -- teardown ----------------------------------------------------------
 
     def close(self) -> None:
+        # Order matters, and not merely for tidiness. The traffic manager runs
+        # its own thread inside the CARLA client, and while it is in
+        # synchronous mode it keeps issuing commands for every vehicle
+        # registered to it. Destroying those vehicles first leaves it
+        # operating on actors that no longer exist, and the resulting C++
+        # exception is thrown on *its* thread, where no Python `except` can
+        # reach it -- the process dies with SIGABRT and
+        #
+        #     terminate called after throwing an instance of 'std::runtime_error'
+        #       what(): trying to operate on a destroyed actor
+        #
+        # after a rollout that had already completed successfully. Standing
+        # the traffic manager down first makes the whole teardown ordinary.
+        if self._traffic_manager is not None:
+            try:
+                self._traffic_manager.set_synchronous_mode(False)
+            except RuntimeError:  # pragma: no cover
+                logger.debug("traffic manager teardown failed", exc_info=True)
+
         for sensor in self._sensors:
             try:
                 sensor.stop()
@@ -603,21 +647,28 @@ class CarlaWorldAdapter:
                 logger.debug("sensor teardown failed", exc_info=True)
         self._sensors.clear()
 
-        for actor in [*self._background, self._ego]:
-            if actor is None:
-                continue
+        # Destroy in one batch where the client supports it: a single
+        # round trip closes the window in which the server holds a
+        # partially torn-down scene.
+        actors = [actor for actor in [*self._background, self._ego] if actor is not None]
+        if actors and self._client is not None:
+            try:
+                import carla
+
+                self._client.apply_batch_sync(
+                    [carla.command.DestroyActor(actor) for actor in actors], True
+                )
+                actors = []
+            except (RuntimeError, ImportError, AttributeError):  # pragma: no cover
+                logger.debug("batch actor teardown failed; falling back", exc_info=True)
+
+        for actor in actors:
             try:
                 actor.destroy()
             except RuntimeError:  # pragma: no cover
                 logger.debug("actor teardown failed", exc_info=True)
         self._background.clear()
         self._ego = None
-
-        if self._traffic_manager is not None:
-            try:
-                self._traffic_manager.set_synchronous_mode(False)
-            except RuntimeError:  # pragma: no cover
-                logger.debug("traffic manager teardown failed", exc_info=True)
 
         # Leaving the server in synchronous mode would hang the next client.
         if self._world is not None and self._original_settings is not None:

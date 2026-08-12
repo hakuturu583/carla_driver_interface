@@ -37,9 +37,27 @@ jobs:
         run: uv run pytest -q
 
       - name: Closed-loop smoke test
+        # Exercises the CLI wiring that `pytest` does not: two real processes
+        # talking over a real socket.
         run: |
+          set -euo pipefail
+
           uv run carla-driver-interface serve --policy route_follower --port 50251 &
-          sleep 5
+          server=$!
+          # The runner kills leftover background processes at job teardown and
+          # attributes their exit status to this step, so the server has to be
+          # reaped here rather than left running.
+          trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+
+          # Poll the port rather than sleeping a fixed amount: a fixed sleep is
+          # either too short on a slow runner or wasted time on a fast one.
+          for _ in $(seq 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/50251) 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+
           uv run carla-driver-interface demo --driver localhost:50251 --steps 200
 
       - name: Compatibility report

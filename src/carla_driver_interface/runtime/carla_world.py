@@ -543,6 +543,24 @@ class CarlaWorldAdapter:
         return mapping.get(str(light.get_state()), TrafficLightState.TRAFFIC_LIGHT_STATE_UNKNOWN)
 
     def _traffic_light_distance(self, light: Any | None, ego: EgoState) -> float:
+        """Distance the ego still has to travel before the stop line.
+
+        Measured **along the ego's heading**, not as a straight-line distance,
+        and negative once the line is behind.  The difference matters: a
+        Euclidean distance starts growing again the moment the ego crosses the
+        line, so a policy reading it cannot tell "1 m to go" from "1 m past",
+        and ``is_at_traffic_light`` stays true throughout the trigger volume.
+
+        A policy that stops inside that volume therefore never leaves it, and
+        is told forever that there is a stop line ahead which it has in fact
+        already crossed -- a deadlock, and one that only appears when the
+        policy does the right thing and stops.
+
+        Returning a negative value here matches what the field already means
+        elsewhere: ``CarlaRendererData.ego_traffic_light_distance_m`` is
+        documented as negative when no stop line applies to the ego, and once
+        the line is behind, none does.
+        """
         if light is None:
             return -1.0
         waypoints = light.get_stop_waypoints()
@@ -551,8 +569,15 @@ class CarlaWorldAdapter:
             stop_points = [carla_vector_to_local(location.x, location.y, location.z)]
         else:
             stop_points = [self._waypoint_to_local(wp) for wp in waypoints]
-        ego_position = ego.pose_local_to_rig.position
-        return float(min(np.linalg.norm(np.asarray(p) - ego_position) for p in stop_points))
+
+        # Resolve into the rig frame, whose +x is straight ahead.
+        to_rig = ego.pose_local_to_rig.inverse()
+        longitudinal = to_rig.transform_points(np.asarray(stop_points, dtype=np.float64))[:, 0]
+
+        # The nearest line still ahead governs us; if they are all behind, the
+        # nearest of those does, so the value stays continuous as we cross.
+        ahead = longitudinal[longitudinal >= 0.0]
+        return float(ahead.min()) if len(ahead) else float(longitudinal.max())
 
     def _speed_limit_mps(self) -> float:
         return float(self._ego.get_speed_limit() or 0.0) / 3.6  # CARLA reports km/h

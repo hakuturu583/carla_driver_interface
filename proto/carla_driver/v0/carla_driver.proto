@@ -67,8 +67,15 @@ message CarlaRendererData {
   string map_name = 3;
   CarlaWeather weather = 4;
   TrafficLightState ego_traffic_light = 5;
-  // Distance along the road to the governing traffic light, in metres.
-  // Negative when `ego_traffic_light` is NONE/UNKNOWN.
+  // Distance to the governing traffic light's stop line, in metres, measured
+  // along the ego's heading.
+  //
+  // Negative when no stop line applies to the ego: either `ego_traffic_light`
+  // is NONE/UNKNOWN, or the ego has already crossed the line. The two cases
+  // are deliberately not distinguished -- in both there is nothing ahead to
+  // stop for. A straight-line distance would be ambiguous, since it starts
+  // growing again once the ego crosses, and a policy that stopped inside the
+  // light's trigger volume would never be told it had got through.
   float ego_traffic_light_distance_m = 6;
   // Posted speed limit for the ego lane, in m/s. 0 when unknown.
   float speed_limit_mps = 7;

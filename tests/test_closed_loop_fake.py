@@ -27,6 +27,8 @@ from carla_driver_interface.runtime import (
     WorldAdapter,
 )
 
+from .conftest import max_route_deviation
+
 SCENARIO = ScenarioSpec(map_name="FakeTown", name="straight_then_curve")
 
 
@@ -71,15 +73,13 @@ def test_route_follower_completes_the_route():
 
 def test_the_ego_tracks_the_route_closely():
     _, world = run(RouteFollowerPolicy())
-    route = straight_then_curve_route()
-    path = np.stack([state.pose_local_to_rig.position for state in world.history])
-    deviations = [float(np.min(np.linalg.norm(route[:, :2] - p[:2], axis=1))) for p in path]
-    assert max(deviations) < 1.5, f"max deviation {max(deviations):.2f} m"
+    deviation = max_route_deviation(world, straight_then_curve_route())
+    assert deviation < 1.5, f"max deviation {deviation:.2f} m"
 
 
 def test_constant_speed_policy_drives_forward():
     """A policy that ignores the route still moves -- the loop is not route-gated."""
-    outcome, world = run(ConstantSpeedPolicy(target_speed_mps=6.0), max_steps=60)
+    outcome, world = run(ConstantSpeedPolicy(cruise_speed_mps=6.0), max_steps=60)
 
     travelled = outcome.metrics["distance_travelled_m"]
     assert travelled > 10.0
@@ -124,7 +124,11 @@ class _Spy(BaseDriver):
                 "time_query_us": ctx.time_query_us,
                 "scene_id": session.scene_id,
                 "cameras": sorted(session.cameras),
-                "frames": {cid: f.frame_start_us for cid, f in session.latest_frames.items()},
+                "frames": {
+                    cid: frames[-1].frame_start_us
+                    for cid, frames in session.frame_history.items()
+                    if frames
+                },
                 "ego_poses": len(session.ego_trajectory),
                 "route_points": len(session.route_waypoints_in_rig),
                 "ground_truth": session.ground_truth_in_rig is not None,
@@ -230,15 +234,10 @@ def test_egomotion_noise_is_hidden_from_the_true_trajectory():
     assert noisy.rollout_return.error == ""
 
     route = straight_then_curve_route()
-
-    def max_deviation(world) -> float:
-        path = np.stack([s.pose_local_to_rig.position for s in world.history])
-        return max(float(np.min(np.linalg.norm(route[:, :2] - p[:2], axis=1))) for p in path)
-
     # Noise degrades tracking, but the loop must stay on the road rather than
     # walking off it as the error accumulates.
-    assert max_deviation(clean_world) < 1.5
-    assert max_deviation(noisy_world) < 4.0
+    assert max_route_deviation(clean_world, route) < 1.5
+    assert max_route_deviation(noisy_world, route) < 4.0
 
 
 def test_driver_termination_stops_the_rollout_immediately():
@@ -313,7 +312,7 @@ def test_fake_world_satisfies_the_adapter_protocol():
 
 def test_carla_adapter_satisfies_the_adapter_protocol_without_importing_carla():
     """The real adapter must stay structurally compatible even in a CARLA-free env."""
-    from carla_driver_interface.runtime.world import CarlaWorldAdapter
+    from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
 
     for method in ("setup", "tick", "apply_control", "environment", "events", "close"):
         assert callable(getattr(CarlaWorldAdapter, method)), method
@@ -336,3 +335,45 @@ def test_a_curving_route_is_actually_curved():
     route = straight_then_curve_route()
     headings = np.arctan2(np.diff(route[:, 1]), np.diff(route[:, 0]))
     assert math.degrees(float(headings[-1] - headings[0])) == pytest.approx(90.0, abs=5.0)
+
+
+def test_an_unsupported_image_format_fails_at_config_construction():
+    """Not in a sensor callback thread 200 ticks later, where it is swallowed.
+
+    Left to the encoder, a bad format produced a rollout that ran to completion,
+    submitted zero images, and reported success.
+    """
+    with pytest.raises(ValueError, match="PNG and JPEG only"):
+        RuntimeConfig(image_format=ImageFormat.JPEG2000)
+
+
+def test_ground_truth_and_route_carry_the_same_waypoints():
+    """One computation per step, so the driver cannot get two disagreeing routes.
+
+    They used to be computed separately, and only the route got the estimated
+    frame correction -- so with egomotion noise on, the two disagreed.
+    """
+
+    class _RouteSpy(BaseDriver):
+        name = "route_spy"
+
+        def __init__(self) -> None:
+            self.pairs: list[tuple[np.ndarray, np.ndarray]] = []
+
+        def drive(self, ctx: DriveContext) -> DriveResult:
+            session = ctx.session
+            if session.ground_truth_in_rig is not None:
+                self.pairs.append(
+                    (
+                        np.asarray(session.route_waypoints_in_rig),
+                        session.ground_truth_in_rig.positions,
+                    )
+                )
+            return DriveResult(trajectory_in_rig=Trajectory.empty())
+
+    spy = _RouteSpy()
+    run(spy, max_steps=8, send_ground_truth=True, egomotion_position_noise_m=0.3)
+
+    assert spy.pairs
+    for route, ground_truth in spy.pairs:
+        assert np.allclose(route, ground_truth)

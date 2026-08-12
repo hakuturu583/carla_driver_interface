@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from carla_driver_interface.grpc_api import ImageFormat
 from carla_driver_interface.runtime.control import ControlConfig
+from carla_driver_interface.runtime.images import validate_image_format
 
 __all__ = ["CameraConfig", "RuntimeConfig", "ScenarioSpec", "default_camera_rig"]
 
@@ -53,7 +54,6 @@ class ScenarioSpec:
     spawn_point_index: int | None = None
     #: Background vehicles handed to the CARLA TrafficManager.
     num_background_vehicles: int = 30
-    num_walkers: int = 0
     #: CARLA weather preset name, e.g. ``"ClearNoon"``. ``None`` keeps the map default.
     weather_preset: str | None = None
 
@@ -135,6 +135,7 @@ class RuntimeConfig:
     epoch_offset_us: int = 0
 
     def __post_init__(self) -> None:
+        validate_image_format(self.image_format)
         if self.fixed_delta_s <= 0.0:
             raise ValueError("fixed_delta_s must be positive")
         ratio = self.policy_timestep_s / self.fixed_delta_s
@@ -151,7 +152,3 @@ class RuntimeConfig:
     @property
     def policy_timestep_us(self) -> int:
         return int(round(self.policy_timestep_s * 1e6))
-
-    @property
-    def fixed_delta_us(self) -> int:
-        return int(round(self.fixed_delta_s * 1e6))

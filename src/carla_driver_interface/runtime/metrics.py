@@ -45,8 +45,10 @@ class MetricsCollector:
         self._series: dict[str, _Series] = {}
         self._distance_m = 0.0
         self._previous_position: np.ndarray | None = None
-        #: Plans keyed by the step that produced them, for plan-deviation.
-        self._pending_plans: list[Trajectory] = []
+        #: Plans still inside their horizon, as (timestamps, positions) arrays.
+        #: Stored pre-converted: scoring only needs positions, and re-deriving
+        #: them per step meant slerping rotations that were then discarded.
+        self._pending_plans: list[tuple[np.ndarray, np.ndarray]] = []
         self._plan_deviations: list[float] = []
 
     # -- recording ---------------------------------------------------------
@@ -111,18 +113,26 @@ class MetricsCollector:
         against where the ego actually went at the same timestamps.
         """
         if len(plan_in_local) >= 2:
-            self._pending_plans.append(plan_in_local)
+            self._pending_plans.append(
+                (
+                    np.asarray(plan_in_local.timestamps_us, dtype=np.float64),
+                    plan_in_local.positions,
+                )
+            )
 
     def _score_pending_plans(self, timestamp_us: int, position: np.ndarray) -> None:
         still_pending = []
-        for plan in self._pending_plans:
-            if timestamp_us > plan.timestamps_us[-1]:
+        for timestamps, positions in self._pending_plans:
+            if timestamp_us > timestamps[-1]:
                 continue  # fully consumed
-            still_pending.append(plan)
-            if timestamp_us < plan.timestamps_us[0]:
+            still_pending.append((timestamps, positions))
+            if timestamp_us < timestamps[0]:
                 continue
-            predicted = plan.interpolate(timestamp_us).position
-            self._plan_deviations.append(float(np.linalg.norm(predicted[:2] - position[:2])))
+            predicted_x = float(np.interp(timestamp_us, timestamps, positions[:, 0]))
+            predicted_y = float(np.interp(timestamp_us, timestamps, positions[:, 1]))
+            self._plan_deviations.append(
+                float(np.hypot(predicted_x - position[0], predicted_y - position[1]))
+            )
         self._pending_plans = still_pending
 
     def _add(

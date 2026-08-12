@@ -100,20 +100,29 @@ egomotion ノイズが 0 なら恒等変換になる。
 |---|---|---|
 | `grpc_api/__init__.py` | 契約の単一 import 窓口 | `alpasim_grpc` |
 | `geometry.py` | Pose / Trajectory と proto 変換 (numpy のみ) | `alpasim_utils.geometry` (Rust 拡張) |
+| `polyline.py` | 弧長・リサンプル・曲率（driver と runtime の共有） | `utils_rs.Polyline` |
 | `driver/service.py` | `EgodriverService` 実装 | `alpasim_driver.main.EgoDriverService` |
 | `driver/base.py` | ポリシー向け API | `alpasim_driver.models.base` |
 | `runtime/carla_runtime.py` | オーケストレータ | `alpasim_runtime.worker.runtime` + `events/` |
-| `runtime/world.py` | シミュレータ抽象 | `alpasim_runtime.services.*` |
+| `runtime/world.py` | シミュレータ抽象（Protocol + dataclass のみ） | `alpasim_runtime.services.*` |
+| `runtime/carla_world.py` | CARLA 実装 | `alpasim_runtime.services.*` |
 | `runtime/control.py` | 軌道追従 | `controller.VDCService` |
 | `runtime/route.py` | route 生成・切り出し | `alpasim_runtime.route_generator` |
 | `runtime/metrics.py` | スコアリング | `alpasim_eval` |
+| `grpc_api/extension.py` | 拡張ペイロードの pack/unpack | (対応物なし) |
 | `compat.py` | 差分の機械可読な定義 | (対応物なし) |
 
 ## テスト戦略
 
 `carla` は optional extra で CI には入らない。そのため `WorldAdapter` プロトコルを一枚挟み、
-`FakeWorld`（自転車モデル）で差し替える。これにより **closed loop 全体が実 gRPC 越しに
+`FakeWorld`（自転車モデル）で差し替える。契約 (`runtime/world.py`) と CARLA 実装
+(`runtime/carla_world.py`) は別ファイルなので、CARLA 不在のプロセスは後者を import しない。これにより **closed loop 全体が実 gRPC 越しに
 CI で回る**: セッション確立、画像送信、egomotion、route、`drive`、制御適用、メトリクス。
 
 `FakeWorld` は物理モデルではない。実際の車両ダイナミクスに依存する検証は、
 実 CARLA サーバに対して行うこと（README の手動確認手順を参照）。
+
+ただし **fake が実装を「持たない」ことは許さない**。カメラの取り付け姿勢のように
+両者が同じ変換 (`conversions.camera_pose_in_rig`) を通ることを
+`tests/test_conversions.py` が検証している。fake が手書きの近似を持つと、
+CI が守っているつもりのものが実機では別物になる。

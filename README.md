@@ -98,7 +98,7 @@ class MyPolicy(BaseDriver):
     frame_history_length = 4  # カメラごとに保持するフレーム数
 
     def drive(self, ctx: DriveContext) -> DriveResult:
-        frame = ctx.session.latest_frames["camera_front_wide_120fov"]
+        frame = ctx.session.latest_frame("camera_front_wide_120fov")
         image = frame.as_array()  # (H, W, 3) uint8 RGB
         route = ctx.session.route_waypoints_in_rig  # (N, 3), rig 系
         speed = ctx.session.speed_mps()

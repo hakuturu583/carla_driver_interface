@@ -11,30 +11,7 @@ import pytest
 from carla_driver_interface.geometry import Pose, Trajectory
 from carla_driver_interface.runtime.control import ControlConfig, TrajectoryFollower
 
-
-def straight_plan(
-    start_us: int = 0, speed: float = 8.0, horizon_s: float = 4.0, step_s: float = 0.1
-) -> Trajectory:
-    plan = Trajectory.empty()
-    for i in range(1, int(horizon_s / step_s) + 1):
-        dt = i * step_s
-        plan.append(start_us + int(dt * 1e6), Pose.from_xyz_yaw(speed * dt, 0.0, 0.0, 0.0))
-    return plan
-
-
-def arc_plan(radius: float, speed: float = 8.0, horizon_s: float = 4.0, step_s: float = 0.1):
-    """A constant-radius left turn starting at the origin, heading +x."""
-    plan = Trajectory.empty()
-    for i in range(1, int(horizon_s / step_s) + 1):
-        dt = i * step_s
-        theta = speed * dt / radius
-        plan.append(
-            int(dt * 1e6),
-            Pose.from_xyz_yaw(
-                radius * math.sin(theta), radius * (1.0 - math.cos(theta)), 0.0, theta
-            ),
-        )
-    return plan
+from .conftest import arc_plan, straight_plan
 
 
 def test_straight_plan_steers_straight():
@@ -53,15 +30,7 @@ def test_left_turn_steers_left():
 
 
 def test_right_turn_steers_right():
-    plan = Trajectory.empty()
-    for i in range(1, 41):
-        dt = i * 0.1
-        theta = -8.0 * dt / 25.0
-        plan.append(
-            int(dt * 1e6),
-            Pose.from_xyz_yaw(25.0 * math.sin(-theta), 25.0 * (math.cos(theta) - 1.0), 0.0, theta),
-        )
-    command = TrajectoryFollower().step(plan, Pose.identity(), 8.0, 0.1)
+    command = TrajectoryFollower().step(arc_plan(radius=-25.0), Pose.identity(), 8.0, 0.1)
     assert command.steer > 0.0
 
 

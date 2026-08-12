@@ -4,15 +4,13 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
 
 import grpc
 import numpy as np
 import pytest
 
 from carla_driver_interface.driver.base import BaseDriver, DriveContext, DriveResult
-from carla_driver_interface.driver.policies import ConstantSpeedPolicy, RouteFollowerPolicy
-from carla_driver_interface.driver.server import build_server
+from carla_driver_interface.driver.policies import RouteFollowerPolicy
 from carla_driver_interface.geometry import Pose, Trajectory, dynamic_state_proto
 from carla_driver_interface.grpc_api import (
     CarlaDriveDebugInfo,
@@ -32,20 +30,6 @@ from carla_driver_interface.grpc_api import (
 from carla_driver_interface.runtime.conversions import available_camera
 
 CAMERA_ID = "camera_front_wide_120fov"
-
-
-@pytest.fixture
-def driver_stub(request) -> Iterator[EgodriverServiceStub]:
-    """Serve the policy named by the test's ``policy`` marker, default constant speed."""
-    marker = request.node.get_closest_marker("policy")
-    policy = marker.args[0] if marker else ConstantSpeedPolicy()
-    server, port = build_server(policy, port=0, host="127.0.0.1")
-    server.start()
-    try:
-        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
-            yield EgodriverServiceStub(channel)
-    finally:
-        server.stop(grace=1.0).wait()
 
 
 def start_session(stub: EgodriverServiceStub, uuid: str = "s0") -> None:
@@ -216,32 +200,34 @@ def test_foreign_renderer_data_is_ignored_not_fatal(driver_stub):
     assert len(response.trajectory.poses) > 0
 
 
+class _Recorder(BaseDriver):
+    """Reports how many ego poses the session had accumulated by ``drive``."""
+
+    name = "recorder"
+
+    def __init__(self) -> None:
+        self.pose_counts: list[int] = []
+
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        self.pose_counts.append(len(ctx.session.ego_trajectory))
+        return DriveResult(trajectory_in_rig=Trajectory.empty())
+
+
+_RECORDER = _Recorder()
+
+
+@pytest.mark.policy(_RECORDER)
 def test_egomotion_observations_accumulate_and_ignore_replays(driver_stub):
-    captured: list[int] = []
+    _RECORDER.pose_counts.clear()
+    start_session(driver_stub)
+    for ts in (0, 50_000, 100_000):
+        submit_pose(driver_stub, ts, Pose.from_xyz_yaw(ts / 1e5, 0, 0, 0))
+    # The runtime may resend the previous step boundary; it must not break the
+    # strictly-increasing invariant.
+    submit_pose(driver_stub, 100_000, Pose.from_xyz_yaw(1.0, 0, 0, 0))
+    driver_stub.drive(DriveRequest(session_uuid="s0", time_now_us=100_000, time_query_us=200_000))
 
-    class Recorder(BaseDriver):
-        name = "recorder"
-
-        def drive(self, ctx: DriveContext) -> DriveResult:
-            captured.append(len(ctx.session.ego_trajectory))
-            return DriveResult(trajectory_in_rig=Trajectory.empty())
-
-    server, port = build_server(Recorder(), port=0, host="127.0.0.1")
-    server.start()
-    try:
-        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
-            stub = EgodriverServiceStub(channel)
-            start_session(stub)
-            for ts in (0, 50_000, 100_000):
-                submit_pose(stub, ts, Pose.from_xyz_yaw(ts / 1e5, 0, 0, 0))
-            # The runtime may resend the previous step boundary; it must not
-            # break the strictly-increasing invariant.
-            submit_pose(stub, 100_000, Pose.from_xyz_yaw(1.0, 0, 0, 0))
-            stub.drive(DriveRequest(session_uuid="s0", time_now_us=100_000, time_query_us=200_000))
-    finally:
-        server.stop(grace=1.0).wait()
-
-    assert captured == [3]
+    assert _RECORDER.pose_counts == [3]
 
 
 # ---------------------------------------------------------------------------
@@ -313,23 +299,18 @@ def test_route_follower_holds_without_a_route(driver_stub):
     assert debug.scalars["reason_no_route"] == 1.0
 
 
-def test_terminate_session_is_propagated():
-    class Quitter(BaseDriver):
-        name = "quitter"
+class _Quitter(BaseDriver):
+    name = "quitter"
 
-        def drive(self, ctx: DriveContext) -> DriveResult:
-            return DriveResult(trajectory_in_rig=Trajectory.empty(), terminate_session=True)
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        return DriveResult(trajectory_in_rig=Trajectory.empty(), terminate_session=True)
 
-    server, port = build_server(Quitter(), port=0, host="127.0.0.1")
-    server.start()
-    try:
-        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
-            stub = EgodriverServiceStub(channel)
-            start_session(stub)
-            submit_pose(stub, 0, Pose.identity())
-            response = stub.drive(
-                DriveRequest(session_uuid="s0", time_now_us=0, time_query_us=100_000)
-            )
-    finally:
-        server.stop(grace=1.0).wait()
+
+@pytest.mark.policy(_Quitter())
+def test_terminate_session_is_propagated(driver_stub):
+    start_session(driver_stub)
+    submit_pose(driver_stub, 0, Pose.identity())
+    response = driver_stub.drive(
+        DriveRequest(session_uuid="s0", time_now_us=0, time_query_us=100_000)
+    )
     assert response.terminate_session is True

@@ -13,7 +13,6 @@ from carla_driver_interface import __version__
 from carla_driver_interface.driver.policies import POLICY_REGISTRY
 from carla_driver_interface.driver.server import run_server
 from carla_driver_interface.runtime.config import (
-    CameraConfig,
     RuntimeConfig,
     ScenarioSpec,
     default_camera_rig,
@@ -84,14 +83,9 @@ def _add_serve_parser(subparsers) -> None:
 
 def _cmd_serve(args: argparse.Namespace) -> int:
     policy_cls = POLICY_REGISTRY[args.policy]
-    kwargs = {}
-    if args.cruise_speed is not None:
-        # Both reference policies name their speed knob differently.
-        kwargs = (
-            {"cruise_speed_mps": args.cruise_speed}
-            if args.policy == "route_follower"
-            else {"target_speed_mps": args.cruise_speed}
-        )
+    # Every policy in the registry takes the same speed keyword, so the CLI does
+    # not need to know which one it is constructing.
+    kwargs = {} if args.cruise_speed is None else {"cruise_speed_mps": args.cruise_speed}
     run_server(policy_cls(**kwargs), port=args.port, host=args.host, max_workers=args.max_workers)
     return 0
 
@@ -148,7 +142,7 @@ def _add_run_parser(subparsers) -> None:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     from carla_driver_interface.runtime.carla_runtime import CarlaRuntime
-    from carla_driver_interface.runtime.world import CarlaWorldAdapter
+    from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
 
     scenario = ScenarioSpec(
         map_name=args.map_name,
@@ -164,9 +158,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         carla_port=args.carla_port,
         ego_blueprint=args.ego_blueprint,
         rear_axle_offset_m=args.rear_axle_offset,
+        # Override only what the flags cover; the mount pose and logical id
+        # stay whatever the default rig says, rather than being re-guessed here.
         cameras=[
-            CameraConfig(
-                logical_id=default_camera_rig()[0].logical_id,
+            replace(
+                default_camera_rig()[0],
                 width=args.camera_width,
                 height=args.camera_height,
                 fov_deg=args.camera_fov,

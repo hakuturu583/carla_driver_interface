@@ -34,8 +34,6 @@ import numpy as np
 
 from carla_driver_interface.geometry import Pose, Trajectory, dynamic_state_proto
 from carla_driver_interface.grpc_api import (
-    CarlaDriveDebugInfo,
-    CarlaRendererData,
     DriveRequest,
     DriveSessionCloseRequest,
     DriveSessionRequest,
@@ -50,7 +48,10 @@ from carla_driver_interface.grpc_api import (
     RouteRequest,
     SimulationReturn,
     Vec3,
+    channel_options,
+    describe_api_mismatch,
 )
+from carla_driver_interface.grpc_api.extension import pack_renderer_data, unpack_debug_info
 from carla_driver_interface.runtime.config import RuntimeConfig, ScenarioSpec
 from carla_driver_interface.runtime.control import TrajectoryFollower, VehicleCommand
 from carla_driver_interface.runtime.metrics import MetricsCollector
@@ -60,9 +61,6 @@ from carla_driver_interface.runtime.world import EgoState, WorldAdapter, WorldSn
 logger = logging.getLogger(__name__)
 
 __all__ = ["CarlaRuntime", "RolloutOutcome"]
-
-#: Camera frames are large; the default 4 MiB limit truncates them.
-_MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass
@@ -110,10 +108,10 @@ class CarlaRuntime:
         self._metrics = MetricsCollector()
         self._rng = np.random.default_rng(config.seed)
 
-        #: True ego trajectory in the local frame.
-        self._ego_trajectory = Trajectory.empty()
-        #: Estimated ("noised") trajectory -- what the driver is told.
-        self._ego_trajectory_estimate = Trajectory.empty()
+        #: Newest estimated ("noised") ego pose -- the frame the driver reasons
+        #: in. The true pose lives on ``_latest.ego``; keeping a second copy
+        #: here is how the two silently drift apart.
+        self._last_estimate: Pose | None = None
         self._pending_egomotion: list[tuple[EgoState, Pose]] = []
         self._route: RouteProvider | None = None
         self._latest: WorldSnapshot | None = None
@@ -191,11 +189,9 @@ class CarlaRuntime:
         if self._external_channel is not None:
             yield EgodriverServiceStub(self._external_channel)
             return
-        options = [
-            ("grpc.max_receive_message_length", _MAX_MESSAGE_BYTES),
-            ("grpc.max_send_message_length", _MAX_MESSAGE_BYTES),
-        ]
-        with grpc.insecure_channel(self.config.driver_address, options=options) as channel:
+        with grpc.insecure_channel(
+            self.config.driver_address, options=channel_options()
+        ) as channel:
             yield EgodriverServiceStub(channel)
 
     def _start_session(self, stub: EgodriverServiceStub, session_uuid: str, setup) -> None:
@@ -219,8 +215,6 @@ class CarlaRuntime:
         Never fatal: alpasim's API version tracks the ``alpasim_grpc`` release,
         and a mismatch only matters if the messages actually changed.
         """
-        from carla_driver_interface.compat import describe_api_mismatch
-
         try:
             version = stub.get_version(Empty(), timeout=self.config.driver_timeout_s)
         except grpc.RpcError as exc:
@@ -239,8 +233,17 @@ class CarlaRuntime:
         # driver sees anything, the way alpasim's replay phase does.
         for _ in range(max(0, self.config.warmup_ticks)):
             self._record_tick(self.world.tick())
-        if not self._ego_trajectory:
+        if self._latest is None:
             self._record_tick(self.world.tick())
+        assert self._latest is not None  # a tick always produces a snapshot
+
+        if self.config.cameras and not self._latest.captures:
+            logger.warning(
+                "no camera frame arrived during %d warmup ticks despite %d configured "
+                "camera(s); the driver will be asked to plan without images",
+                self.config.warmup_ticks,
+                len(self.config.cameras),
+            )
 
         steps = 0
         for _ in range(self.config.max_steps):
@@ -256,14 +259,16 @@ class CarlaRuntime:
                     session_uuid=session_uuid,
                     time_now_us=step_start_us,
                     time_query_us=target_time_us,
-                    renderer_data=self._renderer_data(snapshot).SerializeToString(),
+                    renderer_data=pack_renderer_data(self.world.environment(snapshot)),
                 ),
                 timeout=self.config.driver_timeout_s,
             )
             latency = time.perf_counter() - started
             steps += 1
 
-            plan_in_local = self._plan_to_true_local(Trajectory.from_proto(response.trajectory))
+            plan_in_local = self._plan_to_true_local(
+                Trajectory.from_proto(response.trajectory), snapshot
+            )
             self._metrics.record_plan(plan_in_local)
             self._log_driver_debug(response)
 
@@ -296,14 +301,12 @@ class CarlaRuntime:
     def _record_tick(self, snapshot: WorldSnapshot) -> None:
         """Fold one simulator tick into the runtime's view of the world."""
         ego = snapshot.ego
-        if self._ego_trajectory and ego.timestamp_us <= self._ego_trajectory.timestamps_us[-1]:
+        if self._latest is not None and ego.timestamp_us <= self._latest.ego.timestamp_us:
             # A tick that did not advance the clock carries no new information.
             return
 
-        estimate = self._apply_egomotion_noise(ego.pose_local_to_rig)
-        self._ego_trajectory.append(ego.timestamp_us, ego.pose_local_to_rig)
-        self._ego_trajectory_estimate.append(ego.timestamp_us, estimate)
-        self._pending_egomotion.append((ego, estimate))
+        self._last_estimate = self._apply_egomotion_noise(ego.pose_local_to_rig)
+        self._pending_egomotion.append((ego, self._last_estimate))
         self._latest = snapshot
 
     def _latest_snapshot(self) -> WorldSnapshot:
@@ -333,9 +336,12 @@ class CarlaRuntime:
             )
 
         self._submit_egomotion(stub, session_uuid)
-        self._submit_route(stub, session_uuid, snapshot)
-        if self.config.send_ground_truth:
-            self._submit_ground_truth(stub, session_uuid, snapshot)
+
+        waypoints_in_rig = self._route_waypoints_in_rig(snapshot)
+        if waypoints_in_rig is not None:
+            self._submit_route(stub, session_uuid, snapshot, waypoints_in_rig)
+            if self.config.send_ground_truth:
+                self._submit_ground_truth(stub, session_uuid, snapshot, waypoints_in_rig)
 
     def _submit_egomotion(self, stub: EgodriverServiceStub, session_uuid: str) -> None:
         """Send every pose since the last step, as alpasim does.
@@ -369,21 +375,31 @@ class CarlaRuntime:
             timeout=self.config.driver_timeout_s,
         )
 
-    def _submit_route(
-        self, stub: EgodriverServiceStub, session_uuid: str, snapshot: WorldSnapshot
-    ) -> None:
+    def _route_waypoints_in_rig(self, snapshot: WorldSnapshot) -> np.ndarray | None:
+        """The route window for this step, in the frame the driver reasons in.
+
+        Called once per step and shared by every consumer: ``waypoints_in_rig``
+        advances the route's progress marker, and its forward search is bounded,
+        so a second call on the same pose can move the marker again.
+
+        Projecting onto the map needs the *true* pose, but the waypoints must
+        reach the driver in the frame it reconstructs from the egomotion it was
+        sent -- the estimated one. Otherwise the egomotion error shows up as a
+        route offset. This is exactly what alpasim's PolicyEvent does.
+        """
         if self._route is None:
-            return
+            return None
+        waypoints = self._route.waypoints_in_rig(snapshot.ego.pose_local_to_rig)
+        correction = self._estimate_correction(snapshot)
+        return waypoints if correction is None else correction.transform_points(waypoints)
 
-        # Projecting onto the map needs the *true* pose, but the waypoints must
-        # reach the driver in the frame it reconstructs from the egomotion it was
-        # sent -- the estimated one. Otherwise the egomotion error shows up as a
-        # route offset. This is exactly what alpasim's PolicyEvent does.
-        waypoints_in_true_rig = self._route.waypoints_in_rig(snapshot.ego.pose_local_to_rig)
-        estimate = self._ego_trajectory_estimate.last_pose
-        correction = estimate.inverse() @ snapshot.ego.pose_local_to_rig
-        waypoints_in_rig = correction.transform_points(waypoints_in_true_rig)
-
+    def _submit_route(
+        self,
+        stub: EgodriverServiceStub,
+        session_uuid: str,
+        snapshot: WorldSnapshot,
+        waypoints_in_rig: np.ndarray,
+    ) -> None:
         stub.submit_route(
             RouteRequest(
                 session_uuid=session_uuid,
@@ -398,20 +414,23 @@ class CarlaRuntime:
         )
 
     def _submit_ground_truth(
-        self, stub: EgodriverServiceStub, session_uuid: str, snapshot: WorldSnapshot
+        self,
+        stub: EgodriverServiceStub,
+        session_uuid: str,
+        snapshot: WorldSnapshot,
+        waypoints_in_rig: np.ndarray,
     ) -> None:
         """Send the route reference in place of a recorded trajectory.
 
         There is no recording under CARLA, so this is *not* what alpasim sends.
         It is off by default; see docs/COMPATIBILITY.md before switching it on.
+        The waypoints are the same ones ``submit_route`` sent, so the driver
+        cannot receive two disagreeing versions of the same polyline.
         """
-        if self._route is None:
-            return
-        waypoints = self._route.waypoints_in_rig(snapshot.ego.pose_local_to_rig)
         step_us = self.config.policy_timestep_us
         reference = Trajectory(
-            [snapshot.timestamp_us + i * step_us for i in range(len(waypoints))],
-            [Pose(point, np.array([0.0, 0.0, 0.0, 1.0])) for point in waypoints],
+            [snapshot.timestamp_us + i * step_us for i in range(len(waypoints_in_rig))],
+            [Pose(point, np.array([0.0, 0.0, 0.0, 1.0])) for point in waypoints_in_rig],
         )
         stub.submit_recording_ground_truth(
             GroundTruthRequest(
@@ -422,19 +441,6 @@ class CarlaRuntime:
                 ),
             ),
             timeout=self.config.driver_timeout_s,
-        )
-
-    def _renderer_data(self, snapshot: WorldSnapshot) -> CarlaRendererData:
-        env = self.world.environment(snapshot.ego)
-        return CarlaRendererData(
-            snapshot_timestamp_us=snapshot.timestamp_us,
-            frame_id=snapshot.frame_id,
-            map_name=env.map_name,
-            weather=env.weather,
-            ego_traffic_light=env.ego_traffic_light,
-            ego_traffic_light_distance_m=env.ego_traffic_light_distance_m,
-            speed_limit_mps=env.speed_limit_mps,
-            actors=env.actors,
         )
 
     # -- frames and noise --------------------------------------------------
@@ -459,28 +465,44 @@ class CarlaRuntime:
             position[0], position[1], position[2], pose_local_to_rig.yaw + yaw_offset
         )
 
-    def _plan_to_true_local(self, plan_in_estimated_local: Trajectory) -> Trajectory:
+    def _estimate_correction(self, snapshot: WorldSnapshot) -> Pose | None:
+        """``estimated -> true`` rig correction, or ``None`` when it is identity.
+
+        With no noise model ``_apply_egomotion_noise`` hands back the very pose
+        it was given, so an identity check is exact rather than a tolerance --
+        and it skips a transform over every waypoint and plan pose on the
+        default configuration.
+        """
+        estimate = self._last_estimate
+        true_pose = snapshot.ego.pose_local_to_rig
+        if estimate is None or estimate is true_pose:
+            return None
+        return estimate.inverse() @ true_pose
+
+    def _plan_to_true_local(
+        self, plan_in_estimated_local: Trajectory, snapshot: WorldSnapshot
+    ) -> Trajectory:
         """Map the driver's plan out of the estimated frame into the true one.
 
         Identity when no egomotion noise is configured. The formulation matches
         alpasim's ``transform_trajectory_from_noisy_to_true_local_frame``.
         """
-        if not plan_in_estimated_local or not self._ego_trajectory_estimate:
+        correction = self._estimate_correction(snapshot)
+        if correction is None or not plan_in_estimated_local:
             return plan_in_estimated_local
-        estimate = self._ego_trajectory_estimate.last_pose
-        correction = self._ego_trajectory.last_pose @ estimate.inverse()
-        return plan_in_estimated_local.transform(correction)
+        estimate = self._last_estimate
+        assert estimate is not None  # implied by correction being non-None
+        return plan_in_estimated_local.transform(
+            snapshot.ego.pose_local_to_rig @ estimate.inverse()
+        )
 
     # -- reporting ---------------------------------------------------------
 
     def _log_driver_debug(self, response) -> None:
-        payload = response.debug_info.unstructured_debug_info
-        if not payload or not logger.isEnabledFor(logging.DEBUG):
+        if not logger.isEnabledFor(logging.DEBUG):
             return
-        debug = CarlaDriveDebugInfo()
-        try:
-            debug.ParseFromString(payload)
-        except Exception:  # noqa: BLE001 - foreign payloads are allowed
+        debug = unpack_debug_info(response.debug_info.unstructured_debug_info)
+        if debug is None:
             return
         logger.debug(
             "driver %s: %.1f ms, %s",

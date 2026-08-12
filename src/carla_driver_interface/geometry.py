@@ -35,15 +35,100 @@ __all__ = [
     "Pose",
     "Trajectory",
     "dynamic_state_proto",
+    "euler_zyx_to_quat_xyzw",
+    "quat_conjugate",
+    "quat_mul",
+    "quat_rotate",
     "quat_to_yaw",
     "yaw_to_quat_xyzw",
 ]
+
+
+def euler_zyx_to_quat_xyzw(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Intrinsic Z-Y-X Euler angles (radians) -> quaternion ``(x, y, z, w)``.
+
+    Yaw is applied first, then pitch, then roll -- Unreal's order, which is what
+    :mod:`carla_driver_interface.runtime.conversions` needs after mirroring.
+    """
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    return np.array(
+        [
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy,
+        ],
+        dtype=np.float64,
+    )
 
 
 def yaw_to_quat_xyzw(yaw: float) -> np.ndarray:
     """Quaternion ``(x, y, z, w)`` for a rotation of ``yaw`` radians about +z."""
     half = 0.5 * yaw
     return np.array([0.0, 0.0, math.sin(half), math.cos(half)], dtype=np.float64)
+
+
+def quat_mul(a_xyzw: np.ndarray, b_xyzw: np.ndarray) -> np.ndarray:
+    """Hamilton product ``a * b``, i.e. apply ``b`` first, then ``a``."""
+    ax, ay, az, aw = (float(v) for v in a_xyzw)
+    bx, by, bz, bw = (float(v) for v in b_xyzw)
+    return np.array(
+        [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+        dtype=np.float64,
+    )
+
+
+def quat_conjugate(quat_xyzw: np.ndarray) -> np.ndarray:
+    """Conjugate, which for a unit quaternion is also its inverse."""
+    x, y, z, w = (float(v) for v in quat_xyzw)
+    return np.array([-x, -y, -z, w], dtype=np.float64)
+
+
+def quat_rotate(quat_xyzw: np.ndarray, vector: np.ndarray) -> np.ndarray:
+    """Rotate a single 3-vector by a unit quaternion.
+
+    Written out in scalars rather than with ``np.cross``: for 3-vectors numpy's
+    per-call overhead is several times the arithmetic, and this sits on the
+    closed loop's hot path.
+    """
+    qx, qy, qz, qw = (float(v) for v in quat_xyzw)
+    vx, vy, vz = (float(v) for v in vector)
+
+    # t = 2 * (q_vec x v)
+    tx = 2.0 * (qy * vz - qz * vy)
+    ty = 2.0 * (qz * vx - qx * vz)
+    tz = 2.0 * (qx * vy - qy * vx)
+
+    # v + w * t + q_vec x t
+    return np.array(
+        [
+            vx + qw * tx + qy * tz - qz * ty,
+            vy + qw * ty + qz * tx - qx * tz,
+            vz + qw * tz + qx * ty - qy * tx,
+        ],
+        dtype=np.float64,
+    )
+
+
+def _unchecked_pose(position: np.ndarray, quat_xyzw: np.ndarray) -> Pose:
+    """Build a :class:`Pose` from values already known to be valid.
+
+    ``Pose.__post_init__`` re-converts and re-normalises on every construction,
+    which is right for the public API and pure overhead for results we just
+    computed from unit quaternions. Composition allocates a `Pose` per call on
+    the hot path, so this bypass is worth the sharp edge.
+    """
+    pose = object.__new__(Pose)
+    object.__setattr__(pose, "position", position)
+    object.__setattr__(pose, "quat_xyzw", quat_xyzw)
+    return pose
 
 
 def quat_to_yaw(quat_xyzw: np.ndarray) -> float:
@@ -64,36 +149,6 @@ def _quat_to_matrix(quat_xyzw: np.ndarray) -> np.ndarray:
         ],
         dtype=np.float64,
     )
-
-
-def _matrix_to_quat(rot: np.ndarray) -> np.ndarray:
-    """Rotation matrix -> ``(x, y, z, w)``, via the numerically stable branch."""
-    trace = float(rot[0, 0] + rot[1, 1] + rot[2, 2])
-    if trace > 0.0:
-        s = math.sqrt(trace + 1.0) * 2.0
-        w = 0.25 * s
-        x = (rot[2, 1] - rot[1, 2]) / s
-        y = (rot[0, 2] - rot[2, 0]) / s
-        z = (rot[1, 0] - rot[0, 1]) / s
-    elif rot[0, 0] > rot[1, 1] and rot[0, 0] > rot[2, 2]:
-        s = math.sqrt(1.0 + rot[0, 0] - rot[1, 1] - rot[2, 2]) * 2.0
-        w = (rot[2, 1] - rot[1, 2]) / s
-        x = 0.25 * s
-        y = (rot[0, 1] + rot[1, 0]) / s
-        z = (rot[0, 2] + rot[2, 0]) / s
-    elif rot[1, 1] > rot[2, 2]:
-        s = math.sqrt(1.0 + rot[1, 1] - rot[0, 0] - rot[2, 2]) * 2.0
-        w = (rot[0, 2] - rot[2, 0]) / s
-        x = (rot[0, 1] + rot[1, 0]) / s
-        y = 0.25 * s
-        z = (rot[1, 2] + rot[2, 1]) / s
-    else:
-        s = math.sqrt(1.0 + rot[2, 2] - rot[0, 0] - rot[1, 1]) * 2.0
-        w = (rot[1, 0] - rot[0, 1]) / s
-        x = (rot[0, 2] + rot[2, 0]) / s
-        y = (rot[1, 2] + rot[2, 1]) / s
-        z = 0.25 * s
-    return _normalize_quat(np.array([x, y, z, w], dtype=np.float64))
 
 
 def _normalize_quat(quat_xyzw: np.ndarray) -> np.ndarray:
@@ -129,11 +184,6 @@ class Pose:
         return Pose(np.array([x, y, z], dtype=np.float64), yaw_to_quat_xyzw(yaw))
 
     @staticmethod
-    def from_matrix(matrix: np.ndarray) -> Pose:
-        matrix = np.asarray(matrix, dtype=np.float64)
-        return Pose(matrix[:3, 3], _matrix_to_quat(matrix[:3, :3]))
-
-    @staticmethod
     def from_proto(proto: PoseProto) -> Pose:
         return Pose(
             np.array([proto.vec.x, proto.vec.y, proto.vec.z], dtype=np.float64),
@@ -160,12 +210,20 @@ class Pose:
     # -- algebra -----------------------------------------------------------
 
     def __matmul__(self, other: Pose) -> Pose:
-        """``self @ other`` composes ``a_to_b @ b_to_c -> a_to_c``."""
-        return Pose.from_matrix(self.as_matrix() @ other.as_matrix())
+        """``self @ other`` composes ``a_to_b @ b_to_c -> a_to_c``.
+
+        Done in quaternion space rather than by multiplying 4x4 matrices and
+        decomposing the result back: composition is on the closed loop's hot
+        path, and the matrix round trip both costs more and loses precision.
+        """
+        return _unchecked_pose(
+            self.position + quat_rotate(self.quat_xyzw, other.position),
+            quat_mul(self.quat_xyzw, other.quat_xyzw),
+        )
 
     def inverse(self) -> Pose:
-        rot_t = self.rotation_matrix.T
-        return Pose(-rot_t @ self.position, _matrix_to_quat(rot_t))
+        conjugate = quat_conjugate(self.quat_xyzw)
+        return _unchecked_pose(-quat_rotate(conjugate, self.position), conjugate)
 
     def transform_points(self, points: np.ndarray) -> np.ndarray:
         """Apply this pose to an ``(N, 3)`` array of points."""

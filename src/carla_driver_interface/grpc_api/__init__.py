@@ -77,10 +77,46 @@ AvailableCamera = AvailableCamerasReturn.AvailableCamera
 #: assert we never accidentally fork the service name.
 EGODRIVER_SERVICE_FULL_NAME = "egodriver.EgodriverService"
 
+#: alpasim submits whole camera frames as single unary messages, so the default
+#: 4 MiB limit truncates anything much above 1080p. Both ends of the channel
+#: must agree -- a client that can send more than the server accepts fails with
+#: RESOURCE_EXHAUSTED, which reads like a driver bug -- so the number lives here
+#: rather than being declared once per end.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+
+
+def channel_options() -> list[tuple[str, int]]:
+    """gRPC options every channel and server in this package is built with."""
+    return [
+        ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES),
+        ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
+    ]
+
+
+def describe_api_mismatch(other: VersionId.APIVersion) -> str | None:
+    """Compare a peer's alpasim API version to ours; return a message if they differ.
+
+    Lives beside :data:`API_VERSION_MESSAGE` because it is a statement about the
+    wire contract. Returns ``None`` when the versions match.
+    """
+    ours = API_VERSION_MESSAGE
+    if (other.major, other.minor, other.patch) == (ours.major, ours.minor, ours.patch):
+        return None
+    return (
+        f"alpasim_grpc API version mismatch: peer reports "
+        f"{other.major}.{other.minor}.{other.patch}, we were built against "
+        f"{ours.major}.{ours.minor}.{ours.patch}. "
+        "Compatible unless the messages in use actually changed between those releases."
+    )
+
+
 __all__ = [
     "AABB",
     "API_VERSION_MESSAGE",
     "EGODRIVER_SERVICE_FULL_NAME",
+    "MAX_MESSAGE_BYTES",
+    "channel_options",
+    "describe_api_mismatch",
     "AvailableCamera",
     "AvailableCamerasReturn",
     "AvailableScenesReturn",

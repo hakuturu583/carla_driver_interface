@@ -24,7 +24,7 @@ centre.  :func:`rig_pose_from_actor_transform` shifts by
 
 To avoid depending on the ``carla`` module here (it is an optional extra and
 absent in CI), these functions take plain floats and tuples.  The adapter in
-:mod:`carla_driver_interface.runtime.world` is what unpacks CARLA objects.
+:mod:`carla_driver_interface.runtime.carla_world` is what unpacks CARLA objects.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ import math
 
 import numpy as np
 
-from carla_driver_interface.geometry import Pose
+from carla_driver_interface.geometry import Pose, euler_zyx_to_quat_xyzw
 from carla_driver_interface.grpc_api import (
     AvailableCamera,
     CameraSpec,
@@ -43,6 +43,8 @@ from carla_driver_interface.grpc_api import (
 
 __all__ = [
     "available_camera",
+    "camera_pose_in_rig",
+    "rig_offset_pose",
     "carla_rotation_to_quat_xyzw",
     "carla_transform_to_pose",
     "carla_vector_to_local",
@@ -69,24 +71,15 @@ def carla_vector_to_local(x: float, y: float, z: float) -> np.ndarray:
 
 
 def carla_rotation_to_quat_xyzw(pitch_deg: float, yaw_deg: float, roll_deg: float) -> np.ndarray:
-    """CARLA Euler angles (degrees) -> a right-handed ``(x, y, z, w)`` quaternion."""
-    roll = math.radians(roll_deg)
-    pitch = math.radians(-pitch_deg)
-    yaw = math.radians(-yaw_deg)
+    """CARLA Euler angles (degrees) -> a right-handed ``(x, y, z, w)`` quaternion.
 
-    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
-    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
-    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
-
-    # Z-Y-X intrinsic (yaw, then pitch, then roll), matching Unreal's order.
-    return np.array(
-        [
-            sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-            cr * cp * cy + sr * sp * sy,
-        ],
-        dtype=np.float64,
+    Only the degrees-to-radians step and the mirror's sign flips live here; the
+    Z-Y-X half-angle product itself is shared with the rest of the package.
+    """
+    return euler_zyx_to_quat_xyzw(
+        roll=math.radians(roll_deg),
+        pitch=math.radians(-pitch_deg),
+        yaw=math.radians(-yaw_deg),
     )
 
 
@@ -101,6 +94,16 @@ def carla_transform_to_pose(
     )
 
 
+def rig_offset_pose(rear_axle_offset_m: float) -> Pose:
+    """The ``actor -> rig`` shift, as a pose.
+
+    One definition of the offset's sign and axis, so the ego pose and the camera
+    mounts cannot end up disagreeing about it: getting that wrong puts every
+    camera a wheelbase away from where the driver thinks it is.
+    """
+    return Pose.from_xyz_yaw(rear_axle_offset_m, 0.0, 0.0, 0.0)
+
+
 def rig_pose_from_actor_transform(
     location: tuple[float, float, float],
     rotation_pyr_deg: tuple[float, float, float],
@@ -112,9 +115,30 @@ def rig_pose_from_actor_transform(
     rear axle centre along the body's forward axis; it is negative for a normal
     car, whose rear axle sits behind the origin.
     """
-    actor_pose = carla_transform_to_pose(location, rotation_pyr_deg)
-    shift = Pose(np.array([rear_axle_offset_m, 0.0, 0.0]), np.array([0.0, 0.0, 0.0, 1.0]))
-    return actor_pose @ shift
+    return carla_transform_to_pose(location, rotation_pyr_deg) @ rig_offset_pose(rear_axle_offset_m)
+
+
+def camera_pose_in_rig(
+    x: float,
+    y: float,
+    z: float,
+    pitch_deg: float,
+    yaw_deg: float,
+    roll_deg: float,
+    rear_axle_offset_m: float,
+) -> Pose:
+    """A camera's CARLA-side mount transform, expressed in the rig frame.
+
+    The arguments are exactly a ``carla.Transform``'s components relative to the
+    vehicle actor -- left-handed, degrees -- which is what
+    :class:`~carla_driver_interface.runtime.config.CameraConfig` stores.
+
+    Every adapter must go through here. Doing the mirror by hand is how a mount
+    rotation gets dropped: a ``-y`` on the position alone looks right for a
+    forward camera and silently turns a side camera into a forward one.
+    """
+    pose_actor_to_camera = carla_transform_to_pose((x, y, z), (pitch_deg, yaw_deg, roll_deg))
+    return rig_offset_pose(rear_axle_offset_m).inverse() @ pose_actor_to_camera
 
 
 def vector_local_to_rig(vector_local: np.ndarray, pose_local_to_rig: Pose) -> np.ndarray:
@@ -158,17 +182,17 @@ def available_camera(
     width: int,
     height: int,
     horizontal_fov_deg: float,
-    camera_pose_in_rig: Pose,
+    pose_in_rig: Pose,
 ) -> AvailableCamera:
     """Describe one camera the way ``start_session`` expects it.
 
     Despite the field name, upstream composes ``pose_local_to_rig @
     rig_to_camera`` to place the sensor (``sensorsim_service.py``), so
     ``rig_to_camera`` holds the camera's pose *in the rig frame*. That is what
-    ``camera_pose_in_rig`` is.
+    ``pose_in_rig`` is -- build it with :func:`camera_pose_in_rig`.
     """
     return AvailableCamera(
         intrinsics=pinhole_camera_spec(logical_id, width, height, horizontal_fov_deg),
-        rig_to_camera=camera_pose_in_rig.to_proto(),
+        rig_to_camera=pose_in_rig.to_proto(),
         logical_id=logical_id,
     )

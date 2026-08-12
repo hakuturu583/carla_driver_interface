@@ -20,7 +20,6 @@ import time
 
 import grpc
 import numpy as np
-from google.protobuf.message import DecodeError
 
 from carla_driver_interface import ALPASIM_GRPC_REV, __version__
 from carla_driver_interface.driver.base import (
@@ -33,7 +32,6 @@ from carla_driver_interface.geometry import Pose, Trajectory
 from carla_driver_interface.grpc_api import (
     API_VERSION_MESSAGE,
     CarlaDriveDebugInfo,
-    CarlaRendererData,
     DriveRequest,
     DriveResponse,
     DriveSessionCloseRequest,
@@ -48,6 +46,7 @@ from carla_driver_interface.grpc_api import (
     SessionRequestStatus,
     VersionId,
 )
+from carla_driver_interface.grpc_api.extension import pack_debug_info, unpack_renderer_data
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +138,6 @@ class CarlaEgodriverServicer(EgodriverServiceServicer):
             image_bytes=image.image_bytes,
         )
         with session.lock:
-            session.latest_frames[frame.logical_id] = frame
             history = session.frame_history.setdefault(frame.logical_id, [])
             history.append(frame)
             keep = max(1, self._driver.frame_history_length)
@@ -214,7 +212,7 @@ class CarlaEgodriverServicer(EgodriverServiceServicer):
             session=session,
             time_now_us=time_now_us,
             time_query_us=int(request.time_query_us),
-            renderer_data=_parse_renderer_data(request.renderer_data),
+            renderer_data=unpack_renderer_data(request.renderer_data),
         )
 
         started = time.perf_counter()
@@ -250,7 +248,7 @@ class CarlaEgodriverServicer(EgodriverServiceServicer):
         return DriveResponse(
             trajectory=trajectory_proto,
             debug_info=DriveResponse.DebugInfo(
-                unstructured_debug_info=debug.SerializeToString(),
+                unstructured_debug_info=pack_debug_info(debug),
                 sampled_trajectories=sampled,
             ),
             terminate_session=result.terminate_session,
@@ -265,23 +263,6 @@ class CarlaEgodriverServicer(EgodriverServiceServicer):
             context.abort(grpc.StatusCode.NOT_FOUND, f"Unknown session {uuid}")
             raise AssertionError("unreachable: context.abort raises")  # pragma: no cover
         return session
-
-
-def _parse_renderer_data(payload: bytes) -> CarlaRendererData | None:
-    """Decode ``DriveRequest.renderer_data``, tolerating foreign payloads.
-
-    Upstream leaves this field free-form, so an alpasim runtime may put
-    something else there.  A policy should degrade rather than crash.
-    """
-    if not payload:
-        return None
-    data = CarlaRendererData()
-    try:
-        data.ParseFromString(payload)
-    except DecodeError:
-        logger.debug("renderer_data is not a CarlaRendererData; ignoring")
-        return None
-    return data
 
 
 def _rig_plan_to_local(plan_in_rig: Trajectory, anchor: Pose, time_now_us: int) -> Trajectory:

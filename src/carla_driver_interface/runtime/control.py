@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from carla_driver_interface import polyline
 from carla_driver_interface.geometry import Pose, Trajectory
 
 __all__ = ["ControlConfig", "TrajectoryFollower", "VehicleCommand"]
@@ -108,11 +109,13 @@ class TrajectoryFollower:
             # Nothing to track: coast, holding the last steering angle.
             return VehicleCommand(throttle=0.0, steer=self._previous_steer, brake=0.3)
 
-        plan_in_rig = plan_in_local.transform(pose_local_to_rig.inverse())
-        points = plan_in_rig.positions
+        # Only positions are needed downstream, so rotate the points rather
+        # than composing 40-odd quaternions whose rotations are then discarded.
+        points = pose_local_to_rig.inverse().transform_points(plan_in_local.positions)
+        arc = polyline.arc_lengths(points)
 
-        target_speed = _plan_speed(plan_in_rig)
-        steer, lateral_offset = self._lateral(points, current_speed_mps, dt_s)
+        target_speed = _plan_speed(plan_in_local.timestamps_us, arc)
+        steer, lateral_offset = self._lateral(points, arc, current_speed_mps, dt_s)
         throttle, brake = self._longitudinal(target_speed, current_speed_mps, dt_s)
 
         return VehicleCommand(
@@ -126,14 +129,14 @@ class TrajectoryFollower:
     # -- lateral -----------------------------------------------------------
 
     def _lateral(
-        self, points_in_rig: np.ndarray, speed_mps: float, dt_s: float
+        self, points_in_rig: np.ndarray, arc: np.ndarray, speed_mps: float, dt_s: float
     ) -> tuple[float, float]:
         cfg = self.config
         lookahead = min(
             cfg.max_lookahead_m,
             max(cfg.min_lookahead_m, cfg.lookahead_gain_s * speed_mps),
         )
-        target = _point_at_distance(points_in_rig, lookahead)
+        target = polyline.sample(points_in_rig, arc, lookahead)
 
         # Pure pursuit in the rig frame: the rig origin is the rear axle, so
         # the target's bearing `alpha` is measured straight off its coordinates.
@@ -189,40 +192,19 @@ class TrajectoryFollower:
 # ---------------------------------------------------------------------------
 
 
-def _plan_speed(plan_in_rig: Trajectory) -> float:
+def _plan_speed(timestamps_us: list[int], arc: np.ndarray) -> float:
     """Speed the plan implies over its first second (or its whole length).
 
     Averaging over a window rather than the first pair keeps the target steady
     when the driver emits a plan at a finer resolution than the control step.
     """
-    timestamps = plan_in_rig.timestamps_us
-    points = plan_in_rig.positions
-    t0 = timestamps[0]
-    end = len(timestamps) - 1
-    for i, ts in enumerate(timestamps):
+    t0 = timestamps_us[0]
+    end = len(timestamps_us) - 1
+    for i, ts in enumerate(timestamps_us):
         if ts - t0 >= 1_000_000:
             end = i
             break
-    dt_s = (timestamps[end] - t0) / 1e6
+    dt_s = (timestamps_us[end] - t0) / 1e6
     if dt_s <= 0.0:
         return 0.0
-    distance = float(np.sum(np.linalg.norm(np.diff(points[: end + 1, :2], axis=0), axis=1)))
-    return distance / dt_s
-
-
-def _point_at_distance(points: np.ndarray, distance: float) -> np.ndarray:
-    """First plan point at least ``distance`` away, else the last one.
-
-    Interpolates within the crossing segment so the lookahead does not jump
-    between coarse plan points.
-    """
-    previous = np.zeros(3, dtype=np.float64)
-    travelled = 0.0
-    for point in points:
-        step = float(np.linalg.norm(point[:2] - previous[:2]))
-        if travelled + step >= distance and step > 1e-9:
-            alpha = (distance - travelled) / step
-            return previous + alpha * (point - previous)
-        travelled += step
-        previous = point
-    return points[-1]
+    return float(arc[end]) / dt_s

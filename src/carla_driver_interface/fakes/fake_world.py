@@ -18,15 +18,18 @@ import math
 import numpy as np
 
 from carla_driver_interface.geometry import Pose
-from carla_driver_interface.grpc_api import CarlaWeather, TrafficLightState
+from carla_driver_interface.grpc_api import CarlaRendererData, CarlaWeather, TrafficLightState
 from carla_driver_interface.runtime.config import RuntimeConfig, ScenarioSpec
 from carla_driver_interface.runtime.control import VehicleCommand
-from carla_driver_interface.runtime.conversions import available_camera
+from carla_driver_interface.runtime.conversions import (
+    available_camera,
+    camera_pose_in_rig,
+    seconds_to_us,
+)
 from carla_driver_interface.runtime.images import encode_rgb
 from carla_driver_interface.runtime.world import (
     CameraCapture,
     EgoState,
-    EnvironmentInfo,
     RolloutEvents,
     WorldSetup,
     WorldSnapshot,
@@ -107,8 +110,12 @@ class FakeWorld:
                 width=cam.width,
                 height=cam.height,
                 horizontal_fov_deg=cam.fov_deg,
+                # Through the same conversion the real adapter uses, so a
+                # mount rotation cannot be honoured in CARLA and dropped in CI.
                 # The fake rig has no actor/rig offset to reconcile.
-                camera_pose_in_rig=Pose.from_xyz_yaw(cam.x, -cam.y, cam.z, 0.0),
+                pose_in_rig=camera_pose_in_rig(
+                    cam.x, cam.y, cam.z, cam.pitch_deg, cam.yaw_deg, cam.roll_deg, 0.0
+                ),
             )
             for cam in self.config.cameras
         ]
@@ -128,7 +135,7 @@ class FakeWorld:
 
         self._frame_id += 1
         self._time_s += dt
-        timestamp_us = self.config.epoch_offset_us + int(round(self._time_s * 1e6))
+        timestamp_us = seconds_to_us(self._time_s, self.config.epoch_offset_us)
 
         ego = self._ego_state(timestamp_us)
         self.history.append(ego)
@@ -141,14 +148,15 @@ class FakeWorld:
             captures=self._captures(timestamp_us),
         )
 
-    def environment(self, ego: EgoState) -> EnvironmentInfo:
-        return EnvironmentInfo(
+    def environment(self, snapshot: WorldSnapshot) -> CarlaRendererData:
+        return CarlaRendererData(
+            snapshot_timestamp_us=snapshot.timestamp_us,
+            frame_id=snapshot.frame_id,
             map_name=self.scenario.map_name,
             weather=CarlaWeather(sun_altitude_angle=45.0),
             ego_traffic_light=TrafficLightState.TRAFFIC_LIGHT_STATE_NONE,
             ego_traffic_light_distance_m=-1.0,
             speed_limit_mps=self.max_speed_mps,
-            actors=[],
         )
 
     def events(self) -> RolloutEvents:

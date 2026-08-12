@@ -16,7 +16,7 @@ from carla_driver_interface.grpc_api import (
     CarlaCompatReport,
     CompatEntry,
     CompatLevel,
-    VersionId,
+    describe_api_mismatch,
 )
 
 __all__ = [
@@ -234,19 +234,6 @@ def build_report() -> CarlaCompatReport:
         alpasim_grpc_rev=ALPASIM_GRPC_REV,
         alpasim_grpc_api_version=API_VERSION_MESSAGE,
         entries=list(COMPAT_ENTRIES),
-    )
-
-
-def describe_api_mismatch(other: VersionId.APIVersion) -> str | None:
-    """Compare a peer's API version to ours; return a message if they differ."""
-    ours = API_VERSION_MESSAGE
-    if (other.major, other.minor, other.patch) == (ours.major, ours.minor, ours.patch):
-        return None
-    return (
-        f"alpasim_grpc API version mismatch: peer reports "
-        f"{other.major}.{other.minor}.{other.patch}, we were built against "
-        f"{ours.major}.{ours.minor}.{ours.patch} (alpasim rev {ALPASIM_GRPC_REV[:7]}). "
-        "Compatible unless the messages in use actually changed between those releases."
     )
 
 

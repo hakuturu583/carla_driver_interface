@@ -64,9 +64,9 @@ class SessionState:
     scene_id: str
     cameras: dict[str, AvailableCamera]
 
-    #: Newest frame per camera, keyed by logical id.
-    latest_frames: dict[str, CameraFrame] = field(default_factory=dict)
-    #: Bounded history per camera, oldest first.
+    #: Bounded history per camera, oldest first. Seeded with an empty list for
+    #: every declared camera, so a lookup before the first frame gives ``[]``
+    #: rather than a KeyError. Use :meth:`latest_frame` for the newest one.
     frame_history: dict[str, list[CameraFrame]] = field(default_factory=dict)
     #: Estimated ego trajectory in the ``local`` frame (``local -> rig_est``).
     ego_trajectory: Trajectory = field(default_factory=Trajectory.empty)
@@ -84,6 +84,11 @@ class SessionState:
 
     #: Guards mutation from concurrent gRPC handler threads.
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def latest_frame(self, logical_id: str) -> CameraFrame | None:
+        """Newest frame from one camera, or ``None`` before the first arrives."""
+        frames = self.frame_history.get(logical_id)
+        return frames[-1] if frames else None
 
     def latest_pose(self) -> Pose | None:
         """Newest estimated ego pose (``local -> rig_est``), if any."""

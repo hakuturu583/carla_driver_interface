@@ -12,10 +12,12 @@ from carla_driver_interface.geometry import Pose, Trajectory
 from carla_driver_interface.grpc_api import ShutterType
 from carla_driver_interface.runtime.conversions import (
     available_camera,
+    camera_pose_in_rig,
     carla_rotation_to_quat_xyzw,
     carla_transform_to_pose,
     carla_vector_to_local,
     pinhole_camera_spec,
+    rig_offset_pose,
     rig_pose_from_actor_transform,
     seconds_to_us,
     vector_local_to_rig,
@@ -156,3 +158,73 @@ def test_trajectory_rejects_non_increasing_timestamps():
     trajectory = Trajectory([100], [Pose.identity()])
     with pytest.raises(ValueError, match="strictly increase"):
         trajectory.append(100, Pose.identity())
+
+
+# ---------------------------------------------------------------------------
+# Camera mounts
+# ---------------------------------------------------------------------------
+
+
+def test_camera_pose_in_rig_keeps_the_mount_rotation():
+    """A yawed camera must stay yawed.
+
+    The fake world used to build this pose by hand with a bare ``-y`` flip,
+    which dropped pitch/yaw/roll entirely -- a side camera became a forward
+    camera in CI while remaining a side camera in CARLA, and every test kept
+    passing.
+    """
+    # CARLA yaw +90 is a right turn; the right-handed rig frame calls that -90.
+    pose = camera_pose_in_rig(0.0, 0.0, 1.6, 0.0, 90.0, 0.0, 0.0)
+    assert pose.yaw == pytest.approx(-math.pi / 2)
+
+    pitched = camera_pose_in_rig(0.0, 0.0, 1.6, 15.0, 0.0, 0.0, 0.0)
+    # A downward pitch in CARLA is a negative rotation about the rig's y axis.
+    assert not np.allclose(pitched.rotation_matrix, np.eye(3))
+
+
+def test_camera_pose_in_rig_matches_the_manual_composition():
+    location, rotation = (1.5, -0.8, 1.6), (2.0, 30.0, -1.0)
+    offset = -1.4
+
+    expected = rig_offset_pose(offset).inverse() @ carla_transform_to_pose(location, rotation)
+    got = camera_pose_in_rig(*location, *rotation, offset)
+    assert np.allclose(got.as_matrix(), expected.as_matrix(), atol=1e-12)
+
+
+def test_camera_pose_in_rig_shifts_by_the_rear_axle_offset():
+    """With the rig origin 1.4 m behind the actor, a camera is 1.4 m further forward."""
+    at_origin = camera_pose_in_rig(1.5, 0.0, 1.6, 0.0, 0.0, 0.0, 0.0)
+    shifted = camera_pose_in_rig(1.5, 0.0, 1.6, 0.0, 0.0, 0.0, -1.4)
+    assert shifted.position[0] - at_origin.position[0] == pytest.approx(1.4)
+
+
+def test_rig_offset_pose_is_a_pure_translation():
+    pose = rig_offset_pose(-1.4)
+    assert np.allclose(pose.position, [-1.4, 0.0, 0.0])
+    assert pose.yaw == pytest.approx(0.0)
+
+
+def test_fake_world_and_carla_agree_on_a_rotated_camera_mount():
+    """The fake must describe a camera the same way the real adapter would.
+
+    This is the invariant the fake broke: both go through
+    ``conversions.camera_pose_in_rig``, so a rotated mount survives in CI.
+    """
+    from dataclasses import replace
+
+    from carla_driver_interface.fakes import FakeWorld
+    from carla_driver_interface.geometry import Pose
+    from carla_driver_interface.runtime import RuntimeConfig, ScenarioSpec
+
+    config = RuntimeConfig()
+    side = replace(config.cameras[0], logical_id="camera_left_90fov", yaw_deg=-90.0, y=-0.9)
+    config = replace(config, cameras=[side])
+
+    setup = FakeWorld(config, ScenarioSpec(map_name="FakeTown")).setup()
+    reported = Pose.from_proto(setup.cameras[0].rig_to_camera)
+
+    # The fake has no rear-axle offset, so this is exactly the shared conversion.
+    expected = camera_pose_in_rig(side.x, side.y, side.z, 0.0, side.yaw_deg, 0.0, 0.0)
+    assert np.allclose(reported.as_matrix(), expected.as_matrix(), atol=1e-9)
+    # And, concretely: a left-facing camera reads as +90 degrees in the rig.
+    assert reported.yaw == pytest.approx(math.pi / 2)

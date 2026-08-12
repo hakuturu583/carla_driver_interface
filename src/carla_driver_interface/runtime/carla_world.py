@@ -620,6 +620,25 @@ class CarlaWorldAdapter:
     # -- teardown ----------------------------------------------------------
 
     def close(self) -> None:
+        # Order matters, and not merely for tidiness. The traffic manager runs
+        # its own thread inside the CARLA client, and while it is in
+        # synchronous mode it keeps issuing commands for every vehicle
+        # registered to it. Destroying those vehicles first leaves it
+        # operating on actors that no longer exist, and the resulting C++
+        # exception is thrown on *its* thread, where no Python `except` can
+        # reach it -- the process dies with SIGABRT and
+        #
+        #     terminate called after throwing an instance of 'std::runtime_error'
+        #       what(): trying to operate on a destroyed actor
+        #
+        # after a rollout that had already completed successfully. Standing
+        # the traffic manager down first makes the whole teardown ordinary.
+        if self._traffic_manager is not None:
+            try:
+                self._traffic_manager.set_synchronous_mode(False)
+            except RuntimeError:  # pragma: no cover
+                logger.debug("traffic manager teardown failed", exc_info=True)
+
         for sensor in self._sensors:
             try:
                 sensor.stop()
@@ -628,21 +647,28 @@ class CarlaWorldAdapter:
                 logger.debug("sensor teardown failed", exc_info=True)
         self._sensors.clear()
 
-        for actor in [*self._background, self._ego]:
-            if actor is None:
-                continue
+        # Destroy in one batch where the client supports it: a single
+        # round trip closes the window in which the server holds a
+        # partially torn-down scene.
+        actors = [actor for actor in [*self._background, self._ego] if actor is not None]
+        if actors and self._client is not None:
+            try:
+                import carla
+
+                self._client.apply_batch_sync(
+                    [carla.command.DestroyActor(actor) for actor in actors], True
+                )
+                actors = []
+            except (RuntimeError, ImportError, AttributeError):  # pragma: no cover
+                logger.debug("batch actor teardown failed; falling back", exc_info=True)
+
+        for actor in actors:
             try:
                 actor.destroy()
             except RuntimeError:  # pragma: no cover
                 logger.debug("actor teardown failed", exc_info=True)
         self._background.clear()
         self._ego = None
-
-        if self._traffic_manager is not None:
-            try:
-                self._traffic_manager.set_synchronous_mode(False)
-            except RuntimeError:  # pragma: no cover
-                logger.debug("traffic manager teardown failed", exc_info=True)
 
         # Leaving the server in synchronous mode would hang the next client.
         if self._world is not None and self._original_settings is not None:

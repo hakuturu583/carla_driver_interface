@@ -36,9 +36,7 @@ def light_with_stop_lines(*points_in_local: tuple[float, float]) -> SimpleNamesp
     stub hands back CARLA-frame coordinates that map to the points requested.
     """
     waypoints = [
-        SimpleNamespace(
-            transform=SimpleNamespace(location=SimpleNamespace(x=x, y=-y, z=0.0))
-        )
+        SimpleNamespace(transform=SimpleNamespace(location=SimpleNamespace(x=x, y=-y, z=0.0)))
         for x, y in points_in_local
     ]
     return SimpleNamespace(get_stop_waypoints=lambda: waypoints)
@@ -120,8 +118,6 @@ def test_a_light_without_stop_waypoints_falls_back_to_its_own_position():
     """Some maps have lights with no stop waypoints registered."""
     light = SimpleNamespace(
         get_stop_waypoints=lambda: [],
-        get_transform=lambda: SimpleNamespace(
-            location=SimpleNamespace(x=9.0, y=0.0, z=0.0)
-        ),
+        get_transform=lambda: SimpleNamespace(location=SimpleNamespace(x=9.0, y=0.0, z=0.0)),
     )
     assert distance(light, ego_at(0.0, 0.0)) == pytest.approx(9.0)

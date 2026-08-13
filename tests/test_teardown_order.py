@@ -33,9 +33,7 @@ class _Recorder:
         def shut_down() -> None:
             self.events.append("traffic_manager_shutdown")
 
-        return SimpleNamespace(
-            set_synchronous_mode=set_synchronous_mode, shut_down=shut_down
-        )
+        return SimpleNamespace(set_synchronous_mode=set_synchronous_mode, shut_down=shut_down)
 
 
 def build_adapter(recorder: _Recorder) -> CarlaWorldAdapter:

@@ -577,7 +577,7 @@ class CarlaWorldAdapter:
         if not lanes:
             return []
         stop_lines = self._stop_lines_by_lane()
-        found = []
+        found: list[Any] = []
         for lane in lanes:
             found.extend(stop_lines.get(lane, ()))
         return found

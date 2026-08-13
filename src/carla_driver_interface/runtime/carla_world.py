@@ -119,6 +119,8 @@ class CarlaWorldAdapter:
         self._events = RolloutEvents()
         self._rear_axle_offset_m = 0.0
         self._pending_control: VehicleCommand | None = None
+        #: Lane -> lights governing it, built on first use; lights do not move.
+        self._stop_lines: dict[tuple[int, int], list[Any]] | None = None
 
     # -- setup -------------------------------------------------------------
 
@@ -501,7 +503,7 @@ class CarlaWorldAdapter:
     # -- ground truth ------------------------------------------------------
 
     def environment(self, snapshot: WorldSnapshot) -> CarlaRendererData:
-        light = self._ego.get_traffic_light() if self._ego.is_at_traffic_light() else None
+        light = self._governing_traffic_light()
         return CarlaRendererData(
             snapshot_timestamp_us=snapshot.timestamp_us,
             frame_id=snapshot.frame_id,
@@ -512,6 +514,83 @@ class CarlaWorldAdapter:
             speed_limit_mps=self._speed_limit_mps(),
             actors=self._actor_states(snapshot.ego) if self.config.send_actor_ground_truth else [],
         )
+
+    def _governing_traffic_light(self) -> Any:
+        """The light the ego must obey, found by looking down its own lane.
+
+        CARLA's `is_at_traffic_light` answers a different question -- whether
+        the ego is *inside the light's trigger volume* -- and those volumes are
+        about a metre thick along the road. Across the fifteen lights of
+        Town10HD_Opt they reach a median of 0.55 m back from the stop line, so
+        a policy asking CARLA learns of a red light at the moment it arrives at
+        it, when stopping from any ordinary speed is already impossible. What
+        follows is an overrun that says nothing about the policy.
+
+        So the lane graph is walked forward instead, up to
+        ``traffic_light_sight_distance_m``, and any light whose stop line lies
+        on one of those lanes governs us. That is the question a driver
+        answers by looking.
+
+        Falls back to `is_at_traffic_light` when the sight distance is zero,
+        and whenever the walk finds nothing -- a light on a lane the graph does
+        not reach still governs us once we are standing in its volume.
+        """
+        sight = self.config.traffic_light_sight_distance_m
+        if sight > 0.0:
+            lanes = self._lanes_ahead(sight)
+            for light in self._lights_by_lane_ahead(lanes):
+                return light
+        return self._ego.get_traffic_light() if self._ego.is_at_traffic_light() else None
+
+    def _lanes_ahead(self, distance_m: float) -> list[tuple[int, int]]:
+        """``(road_id, lane_id)`` of the lanes the ego is about to drive along.
+
+        Walked rather than guessed, because a stop line sits on the lane it
+        governs and the ego is often still on an earlier segment of road when
+        it needs to know. Junction exits fan out; the first branch is taken,
+        which is enough -- the light being looked for is on the approach, and
+        the approach is shared by every branch.
+        """
+        step = max(1.0, self.config.route_resolution_m)
+        waypoint = self._map.get_waypoint(self._ego.get_transform().location, project_to_road=True)
+        if waypoint is None:
+            return []
+        lanes = [(waypoint.road_id, waypoint.lane_id)]
+        travelled = 0.0
+        while travelled < distance_m:
+            options = waypoint.next(step)
+            if not options:
+                break
+            waypoint = options[0]
+            travelled += step
+            lane = (waypoint.road_id, waypoint.lane_id)
+            if lane != lanes[-1]:
+                lanes.append(lane)
+        return lanes
+
+    def _lights_by_lane_ahead(self, lanes: list[tuple[int, int]]) -> list[Any]:
+        """Lights whose stop lines lie on those lanes, nearest lane first.
+
+        The lane list is in the order the ego will drive it, so the first hit
+        is the first light it will meet.
+        """
+        if not lanes:
+            return []
+        stop_lines = self._stop_lines_by_lane()
+        found = []
+        for lane in lanes:
+            found.extend(stop_lines.get(lane, ()))
+        return found
+
+    def _stop_lines_by_lane(self) -> dict[tuple[int, int], list[Any]]:
+        """Which light governs which lane, built once -- lights do not move."""
+        if self._stop_lines is None:
+            index: dict[tuple[int, int], list[Any]] = {}
+            for light in self._world.get_actors().filter("traffic.traffic_light*"):
+                for waypoint in light.get_stop_waypoints():
+                    index.setdefault((waypoint.road_id, waypoint.lane_id), []).append(light)
+            self._stop_lines = index
+        return self._stop_lines
 
     def _weather(self) -> CarlaWeather:
         weather = self._world.get_weather()

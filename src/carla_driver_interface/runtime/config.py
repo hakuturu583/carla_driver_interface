@@ -113,6 +113,22 @@ class RuntimeConfig:
     #: Spacing of the published route waypoints, in metres.
     route_resolution_m: float = 2.0
 
+    # -- traffic lights --
+    #: How far ahead of the ego a traffic light is looked for, in metres.
+    #:
+    #: CARLA's own answer to "does a light govern me" is
+    #: ``Actor.is_at_traffic_light()``, which is true only inside the light's
+    #: trigger volume -- and those are thin. Measured across all fifteen lights
+    #: of Town10HD_Opt, the volume reaches a median of 0.55 m back from the
+    #: stop line and 2.38 m at the most, so a policy relying on it hears about
+    #: a red light once it is already at the line. Stopping from 25 km/h takes
+    #: about six metres, so it cannot; the overrun that follows belongs to this
+    #: interface rather than to the policy being evaluated.
+    #:
+    #: Walking the lane graph forward instead reports the light from where a
+    #: driver would have seen it. 0 restores the trigger-volume behaviour.
+    traffic_light_sight_distance_m: float = 60.0
+
     # -- observations --
     #: alpasim sends the recorded ground-truth trajectory; there is no recording
     #: under CARLA, so this is off by default. Turning it on sends the route

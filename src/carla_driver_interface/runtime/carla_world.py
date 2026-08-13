@@ -54,6 +54,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["CarlaWorldAdapter", "load_carla_module"]
 
+#: How far past a stop waypoint to look for the junction it governs, and in
+#: what steps. CARLA's stop waypoints sit a median of 5.5 m upstream of their
+#: junction on Town10HD_Opt and at most 7.0 m, so eight is generous without
+#: reaching the next junction along.
+_STOP_LINE_SEARCH_M = 8.0
+_STOP_LINE_STEP_M = 0.5
+
 
 def load_carla_module(python_path: str | None = None) -> Any:
     """Import ``carla``, optionally from an out-of-tree PythonAPI.
@@ -119,6 +126,10 @@ class CarlaWorldAdapter:
         self._events = RolloutEvents()
         self._rear_axle_offset_m = 0.0
         self._pending_control: VehicleCommand | None = None
+        #: Lane -> lights governing it, built on first use; lights do not move.
+        self._stop_lines: dict[tuple[int, int], list[Any]] | None = None
+        #: Light id -> where to stop for it, in the local frame. Same reason.
+        self._stop_line_points_by_light: dict[int, list[np.ndarray]] = {}
 
     # -- setup -------------------------------------------------------------
 
@@ -501,7 +512,7 @@ class CarlaWorldAdapter:
     # -- ground truth ------------------------------------------------------
 
     def environment(self, snapshot: WorldSnapshot) -> CarlaRendererData:
-        light = self._ego.get_traffic_light() if self._ego.is_at_traffic_light() else None
+        light = self._governing_traffic_light()
         return CarlaRendererData(
             snapshot_timestamp_us=snapshot.timestamp_us,
             frame_id=snapshot.frame_id,
@@ -512,6 +523,117 @@ class CarlaWorldAdapter:
             speed_limit_mps=self._speed_limit_mps(),
             actors=self._actor_states(snapshot.ego) if self.config.send_actor_ground_truth else [],
         )
+
+    def _governing_traffic_light(self) -> Any:
+        """The light the ego must obey, found by looking down its own lane.
+
+        CARLA's `is_at_traffic_light` answers a different question -- whether
+        the ego is *inside the light's trigger volume* -- and those volumes are
+        about a metre thick along the road. Across the fifteen lights of
+        Town10HD_Opt they reach a median of 0.55 m back from the stop line, so
+        a policy asking CARLA learns of a red light at the moment it arrives at
+        it, when stopping from any ordinary speed is already impossible. What
+        follows is an overrun that says nothing about the policy.
+
+        So the lane graph is walked forward instead, up to
+        ``traffic_light_sight_distance_m``, and any light whose stop line lies
+        on one of those lanes governs us. That is the question a driver
+        answers by looking.
+
+        Inside a junction, nothing governs us at all. Having crossed the line
+        the thing to do is clear the box, so no light in there is ours to read
+        -- and the trigger volumes make that an active hazard rather than a
+        nicety, since a volume reaches a couple of metres past its own line and
+        a junction has four of them. A vehicle in the middle can be standing in
+        the volume of a light governing traffic that crosses its path, and be
+        told to stop where stopping is worst.
+
+        Falls back to `is_at_traffic_light` when the sight distance is zero --
+        which restores the previous behaviour exactly -- and, outside a
+        junction, whenever the walk finds nothing: a light on a lane the graph
+        does not reach still governs us once we are standing in its volume.
+        """
+        sight = self.config.traffic_light_sight_distance_m
+        if sight > 0.0:
+            waypoint = self._ego_waypoint()
+            if waypoint is not None and waypoint.is_junction:
+                return None
+            for light in self._lights_by_lane_ahead(self._lanes_ahead(sight)):
+                return light
+        return self._ego.get_traffic_light() if self._ego.is_at_traffic_light() else None
+
+    def _ego_waypoint(self) -> Any:
+        """Where the ego sits on the lane graph, or ``None`` if nowhere."""
+        return self._map.get_waypoint(self._ego.get_transform().location, project_to_road=True)
+
+    def _lanes_ahead(self, distance_m: float) -> list[tuple[int, int]]:
+        """``(road_id, lane_id)`` of the lanes up to the next junction.
+
+        Walked rather than guessed, because a stop line sits on the lane it
+        governs and the ego is often still on an earlier segment of road when
+        it needs to know.
+
+        The walk stops at the junction it reaches, and reports nothing at all
+        once the ego is inside one, and both of those are the same rule: a
+        light governs the vehicles waiting to enter its junction, not the ones
+        already in it. Having crossed the line, the thing to do is clear the
+        box -- which is also the law -- and a light beyond it belongs to a
+        junction we have yet to arrive at.
+
+        Left walking through, this reported the *next* junction's light from
+        inside the current one, at 70-odd metres. Nothing needs braking for at
+        that range, so the stop line was never the problem; the problem was
+        that a policy gating "am I free to move" on whether a light applies
+        then had a reason to stand still, and stood still in the middle of a
+        junction for seventeen seconds. Walking through a junction is also
+        what made the answer flicker: the lane the ego projects onto inside
+        one is ambiguous, so consecutive steps took different branches and
+        reported different lights, 76 m away one step and 3.9 m the next.
+        """
+        step = max(1.0, self.config.route_resolution_m)
+        waypoint = self._ego_waypoint()
+        if waypoint is None or waypoint.is_junction:
+            return []
+        lanes = [(waypoint.road_id, waypoint.lane_id)]
+        travelled = 0.0
+        while travelled < distance_m:
+            options = waypoint.next(step)
+            if not options:
+                break
+            waypoint = options[0]
+            travelled += step
+            lane = (waypoint.road_id, waypoint.lane_id)
+            if lane != lanes[-1]:
+                lanes.append(lane)
+            # The stop line sits at the mouth of the junction, so this lane may
+            # still carry it -- but nothing past it is ours to obey yet.
+            if waypoint.is_junction:
+                break
+        return lanes
+
+    def _lights_by_lane_ahead(self, lanes: list[tuple[int, int]]) -> list[Any]:
+        """Lights whose stop lines lie on those lanes, nearest lane first.
+
+        The lane list is in the order the ego will drive it, so the first hit
+        is the first light it will meet.
+        """
+        if not lanes:
+            return []
+        stop_lines = self._stop_lines_by_lane()
+        found: list[Any] = []
+        for lane in lanes:
+            found.extend(stop_lines.get(lane, ()))
+        return found
+
+    def _stop_lines_by_lane(self) -> dict[tuple[int, int], list[Any]]:
+        """Which light governs which lane, built once -- lights do not move."""
+        if self._stop_lines is None:
+            index: dict[tuple[int, int], list[Any]] = {}
+            for light in self._world.get_actors().filter("traffic.traffic_light*"):
+                for waypoint in light.get_stop_waypoints():
+                    index.setdefault((waypoint.road_id, waypoint.lane_id), []).append(light)
+            self._stop_lines = index
+        return self._stop_lines
 
     def _weather(self) -> CarlaWeather:
         weather = self._world.get_weather()
@@ -563,12 +685,10 @@ class CarlaWorldAdapter:
         """
         if light is None:
             return -1.0
-        waypoints = light.get_stop_waypoints()
-        if not waypoints:
+        stop_points = self._stop_line_points(light)
+        if not stop_points:
             location = light.get_transform().location
             stop_points = [carla_vector_to_local(location.x, location.y, location.z)]
-        else:
-            stop_points = [self._waypoint_to_local(wp) for wp in waypoints]
 
         # Resolve into the rig frame, whose +x is straight ahead.
         to_rig = ego.pose_local_to_rig.inverse()
@@ -578,6 +698,53 @@ class CarlaWorldAdapter:
         # nearest of those does, so the value stays continuous as we cross.
         ahead = longitudinal[longitudinal >= 0.0]
         return float(ahead.min()) if len(ahead) else float(longitudinal.max())
+
+    def _stop_line_points(self, light: Any) -> list[np.ndarray]:
+        """Where a vehicle should stop for this light, in the local frame.
+
+        Not `get_stop_waypoints()` itself, which sits further back than the
+        line a driver aims at. Measured across all thirty stop waypoints of
+        Town10HD_Opt, each is a median of 5.5 m upstream of the junction it
+        governs, and up to 7.0 m. A policy told to stop there stops that far
+        short of the junction mouth -- which, with the length of a car in
+        front of the rear axle it measures from, is most of a car and a half
+        of hesitation that belongs to nobody.
+
+        So each stop waypoint is walked forward to the mouth of its junction,
+        and that is the point reported. A waypoint with no junction ahead of
+        it inside `_STOP_LINE_SEARCH_M` is reported where it is; there is
+        nothing better to say about it.
+
+        Cached, because lights and junctions do not move and this walks the
+        lane graph a few metres at a time.
+        """
+        key = int(getattr(light, "id", 0))
+        cached = self._stop_line_points_by_light.get(key)
+        if cached is None:
+            cached = [
+                self._waypoint_to_local(self._junction_mouth(wp))
+                for wp in light.get_stop_waypoints()
+            ]
+            self._stop_line_points_by_light[key] = cached
+        return cached
+
+    def _junction_mouth(self, stop: Any) -> Any:
+        """The first waypoint of the junction the stop line governs.
+
+        Falls back to the stop waypoint itself when the walk finds no
+        junction -- a stop line on open road is unusual but not ours to
+        second-guess.
+        """
+        waypoint, travelled = stop, 0.0
+        while travelled < _STOP_LINE_SEARCH_M:
+            options = waypoint.next(_STOP_LINE_STEP_M)
+            if not options:
+                return stop
+            waypoint = options[0]
+            travelled += _STOP_LINE_STEP_M
+            if waypoint.is_junction:
+                return waypoint
+        return stop
 
     def _speed_limit_mps(self) -> float:
         return float(self._ego.get_speed_limit() or 0.0) / 3.6  # CARLA reports km/h

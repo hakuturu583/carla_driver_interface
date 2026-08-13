@@ -29,17 +29,27 @@ def ego_at(x: float, y: float, yaw_rad: float = 0.0) -> EgoState:
     )
 
 
-def light_with_stop_lines(*points_in_local: tuple[float, float]) -> SimpleNamespace:
-    """A stub traffic light whose stop waypoints sit at the given points.
+def stop_waypoint(x: float, y: float, following: list | None = None) -> SimpleNamespace:
+    """A stop waypoint at a point, with whatever lane follows it.
 
     ``carla_vector_to_local`` flips the y axis (CARLA is left-handed), so the
-    stub hands back CARLA-frame coordinates that map to the points requested.
+    coordinates handed back are CARLA-frame ones mapping to the point asked
+    for. With nothing following, the walk to the junction finds none and the
+    waypoint is reported where it is.
     """
-    waypoints = [
-        SimpleNamespace(transform=SimpleNamespace(location=SimpleNamespace(x=x, y=-y, z=0.0)))
-        for x, y in points_in_local
-    ]
-    return SimpleNamespace(get_stop_waypoints=lambda: waypoints)
+    node = SimpleNamespace(
+        transform=SimpleNamespace(location=SimpleNamespace(x=x, y=-y, z=0.0)),
+        is_junction=False,
+    )
+    node.next = lambda _step, node=node: getattr(node, "_following", []) or []
+    node._following = following or []
+    return node
+
+
+def light_with_stop_lines(*points_in_local: tuple[float, float]) -> SimpleNamespace:
+    """A stub traffic light whose stop waypoints sit at the given points."""
+    waypoints = [stop_waypoint(x, y) for x, y in points_in_local]
+    return SimpleNamespace(get_stop_waypoints=lambda: waypoints, id=id(waypoints))
 
 
 class _Geometry:
@@ -52,6 +62,11 @@ class _Geometry:
 
     _waypoint_to_local = CarlaWorldAdapter._waypoint_to_local
     _traffic_light_distance = CarlaWorldAdapter._traffic_light_distance
+    _stop_line_points = CarlaWorldAdapter._stop_line_points
+    _junction_mouth = CarlaWorldAdapter._junction_mouth
+
+    def __init__(self) -> None:
+        self._stop_line_points_by_light: dict[int, list] = {}
 
 
 def distance(light, ego: EgoState) -> float:
@@ -121,3 +136,25 @@ def test_a_light_without_stop_waypoints_falls_back_to_its_own_position():
         get_transform=lambda: SimpleNamespace(location=SimpleNamespace(x=9.0, y=0.0, z=0.0)),
     )
     assert distance(light, ego_at(0.0, 0.0)) == pytest.approx(9.0)
+
+
+def test_the_line_reported_is_the_junction_mouth_not_the_stop_waypoint():
+    """CARLA's stop waypoints sit upstream of the junction they govern.
+
+    Measured across all thirty of them on Town10HD_Opt: a median of 5.5 m
+    before the junction mouth and up to 7.0 m. A policy told to stop there
+    stops that far short of the line a driver aims at, and with the length of
+    car ahead of the rear axle it measures from, that is most of a car and a
+    half of hesitation belonging to nobody.
+    """
+    mouth = stop_waypoint(18.0, 0.0)
+    mouth.is_junction = True
+    approach = stop_waypoint(12.0, 0.0, following=[mouth])
+    light = SimpleNamespace(get_stop_waypoints=lambda: [approach], id=7)
+    assert distance(light, ego_at(0.0, 0.0)) == pytest.approx(18.0)
+
+
+def test_a_stop_waypoint_with_no_junction_ahead_is_reported_where_it_is():
+    """Unusual, but not ours to second-guess."""
+    light = SimpleNamespace(get_stop_waypoints=lambda: [stop_waypoint(12.0, 0.0)], id=8)
+    assert distance(light, ego_at(0.0, 0.0)) == pytest.approx(12.0)

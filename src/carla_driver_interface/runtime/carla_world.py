@@ -543,17 +543,32 @@ class CarlaWorldAdapter:
         return self._ego.get_traffic_light() if self._ego.is_at_traffic_light() else None
 
     def _lanes_ahead(self, distance_m: float) -> list[tuple[int, int]]:
-        """``(road_id, lane_id)`` of the lanes the ego is about to drive along.
+        """``(road_id, lane_id)`` of the lanes up to the next junction.
 
         Walked rather than guessed, because a stop line sits on the lane it
         governs and the ego is often still on an earlier segment of road when
-        it needs to know. Junction exits fan out; the first branch is taken,
-        which is enough -- the light being looked for is on the approach, and
-        the approach is shared by every branch.
+        it needs to know.
+
+        The walk stops at the junction it reaches, and reports nothing at all
+        once the ego is inside one, and both of those are the same rule: a
+        light governs the vehicles waiting to enter its junction, not the ones
+        already in it. Having crossed the line, the thing to do is clear the
+        box -- which is also the law -- and a light beyond it belongs to a
+        junction we have yet to arrive at.
+
+        Left walking through, this reported the *next* junction's light from
+        inside the current one, at 70-odd metres. Nothing needs braking for at
+        that range, so the stop line was never the problem; the problem was
+        that a policy gating "am I free to move" on whether a light applies
+        then had a reason to stand still, and stood still in the middle of a
+        junction for seventeen seconds. Walking through a junction is also
+        what made the answer flicker: the lane the ego projects onto inside
+        one is ambiguous, so consecutive steps took different branches and
+        reported different lights, 76 m away one step and 3.9 m the next.
         """
         step = max(1.0, self.config.route_resolution_m)
         waypoint = self._map.get_waypoint(self._ego.get_transform().location, project_to_road=True)
-        if waypoint is None:
+        if waypoint is None or waypoint.is_junction:
             return []
         lanes = [(waypoint.road_id, waypoint.lane_id)]
         travelled = 0.0
@@ -566,6 +581,10 @@ class CarlaWorldAdapter:
             lane = (waypoint.road_id, waypoint.lane_id)
             if lane != lanes[-1]:
                 lanes.append(lane)
+            # The stop line sits at the mouth of the junction, so this lane may
+            # still carry it -- but nothing past it is ours to obey yet.
+            if waypoint.is_junction:
+                break
         return lanes
 
     def _lights_by_lane_ahead(self, lanes: list[tuple[int, int]]) -> list[Any]:

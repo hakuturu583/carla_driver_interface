@@ -21,17 +21,24 @@ from typing import Any
 from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
 
 
-def waypoint(road_id: int, lane_id: int, following: list[Any] | None = None) -> SimpleNamespace:
+def waypoint(
+    road_id: int,
+    lane_id: int,
+    following: list[Any] | None = None,
+    is_junction: bool = False,
+) -> SimpleNamespace:
     """A lane waypoint that knows what comes after it."""
-    node = SimpleNamespace(road_id=road_id, lane_id=lane_id)
+    node = SimpleNamespace(road_id=road_id, lane_id=lane_id, is_junction=is_junction)
     node.next = lambda _step, node=node: getattr(node, "_following", []) or []
     node._following = following or []
     return node
 
 
-def lane(road_id: int, lane_id: int, length: int) -> list[SimpleNamespace]:
+def lane(
+    road_id: int, lane_id: int, length: int, is_junction: bool = False
+) -> list[SimpleNamespace]:
     """A run of waypoints along one lane, chained front to back."""
-    nodes = [waypoint(road_id, lane_id) for _ in range(length)]
+    nodes = [waypoint(road_id, lane_id, is_junction=is_junction) for _ in range(length)]
     for earlier, later in zip(nodes, nodes[1:], strict=False):
         earlier._following = [later]
     return nodes
@@ -128,6 +135,48 @@ def test_standing_in_a_trigger_volume_still_counts_when_the_walk_finds_nothing()
     at_light = light_on((9, 9))
     lookup = _Lookup(lane(1, -1, 5), [light_on((4, 2))], at_light=at_light)
     assert lookup._governing_traffic_light() is at_light
+
+
+def test_nothing_governs_a_vehicle_already_inside_the_junction():
+    """Having crossed the line, the thing to do is clear the box.
+
+    That is the law, and it is also what stops a policy from finding a reason
+    to wait where waiting is worst. Reported from inside a junction, the next
+    junction's light -- 70-odd metres away, nothing to brake for -- was enough
+    for a policy gating "am I free to move" on whether a light applies to
+    stand still in the middle of the box for seventeen seconds.
+    """
+    inside = lane(2, 1, 5, is_junction=True)
+    inside[-1]._following = lane(3, -1, 20)
+    lookup = _Lookup(inside, [light_on((3, -1))])
+    assert lookup._governing_traffic_light() is None
+
+
+def test_the_walk_does_not_reach_past_the_junction_it_arrives_at():
+    """The light beyond belongs to a junction we have yet to arrive at.
+
+    Walking through was also what made the answer flicker: the lane the ego
+    projects onto inside a junction is ambiguous, so consecutive steps took
+    different branches and reported different lights -- 76 m away one step,
+    3.9 m the next.
+    """
+    approach = lane(1, -1, 4)
+    junction = lane(2, 1, 3, is_junction=True)
+    approach[-1]._following = junction
+    junction[-1]._following = lane(3, -1, 20)
+
+    near, beyond = light_on((1, -1)), light_on((3, -1))
+    assert _Lookup(approach, [beyond, near])._governing_traffic_light() is near
+    # And with only the far one to find, nothing is reported at all.
+    assert _Lookup(approach, [beyond])._governing_traffic_light() is None
+
+
+def test_a_stop_line_on_the_junction_lane_itself_still_counts():
+    """Some maps register the line on the first junction waypoint."""
+    approach = lane(1, -1, 4)
+    approach[-1]._following = lane(2, 1, 3, is_junction=True)
+    governing = light_on((2, 1))
+    assert _Lookup(approach, [governing])._governing_traffic_light() is governing
 
 
 def test_a_map_without_a_lane_under_the_ego_reports_nothing():

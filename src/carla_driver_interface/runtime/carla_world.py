@@ -54,6 +54,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["CarlaWorldAdapter", "load_carla_module"]
 
+#: How far past a stop waypoint to look for the junction it governs, and in
+#: what steps. CARLA's stop waypoints sit a median of 5.5 m upstream of their
+#: junction on Town10HD_Opt and at most 7.0 m, so eight is generous without
+#: reaching the next junction along.
+_STOP_LINE_SEARCH_M = 8.0
+_STOP_LINE_STEP_M = 0.5
+
 
 def load_carla_module(python_path: str | None = None) -> Any:
     """Import ``carla``, optionally from an out-of-tree PythonAPI.
@@ -121,6 +128,8 @@ class CarlaWorldAdapter:
         self._pending_control: VehicleCommand | None = None
         #: Lane -> lights governing it, built on first use; lights do not move.
         self._stop_lines: dict[tuple[int, int], list[Any]] | None = None
+        #: Light id -> where to stop for it, in the local frame. Same reason.
+        self._stop_line_points_by_light: dict[int, list[np.ndarray]] = {}
 
     # -- setup -------------------------------------------------------------
 
@@ -676,12 +685,10 @@ class CarlaWorldAdapter:
         """
         if light is None:
             return -1.0
-        waypoints = light.get_stop_waypoints()
-        if not waypoints:
+        stop_points = self._stop_line_points(light)
+        if not stop_points:
             location = light.get_transform().location
             stop_points = [carla_vector_to_local(location.x, location.y, location.z)]
-        else:
-            stop_points = [self._waypoint_to_local(wp) for wp in waypoints]
 
         # Resolve into the rig frame, whose +x is straight ahead.
         to_rig = ego.pose_local_to_rig.inverse()
@@ -691,6 +698,53 @@ class CarlaWorldAdapter:
         # nearest of those does, so the value stays continuous as we cross.
         ahead = longitudinal[longitudinal >= 0.0]
         return float(ahead.min()) if len(ahead) else float(longitudinal.max())
+
+    def _stop_line_points(self, light: Any) -> list[np.ndarray]:
+        """Where a vehicle should stop for this light, in the local frame.
+
+        Not `get_stop_waypoints()` itself, which sits further back than the
+        line a driver aims at. Measured across all thirty stop waypoints of
+        Town10HD_Opt, each is a median of 5.5 m upstream of the junction it
+        governs, and up to 7.0 m. A policy told to stop there stops that far
+        short of the junction mouth -- which, with the length of a car in
+        front of the rear axle it measures from, is most of a car and a half
+        of hesitation that belongs to nobody.
+
+        So each stop waypoint is walked forward to the mouth of its junction,
+        and that is the point reported. A waypoint with no junction ahead of
+        it inside `_STOP_LINE_SEARCH_M` is reported where it is; there is
+        nothing better to say about it.
+
+        Cached, because lights and junctions do not move and this walks the
+        lane graph a few metres at a time.
+        """
+        key = int(getattr(light, "id", 0))
+        cached = self._stop_line_points_by_light.get(key)
+        if cached is None:
+            cached = [
+                self._waypoint_to_local(self._junction_mouth(wp))
+                for wp in light.get_stop_waypoints()
+            ]
+            self._stop_line_points_by_light[key] = cached
+        return cached
+
+    def _junction_mouth(self, stop: Any) -> Any:
+        """The first waypoint of the junction the stop line governs.
+
+        Falls back to the stop waypoint itself when the walk finds no
+        junction -- a stop line on open road is unusual but not ours to
+        second-guess.
+        """
+        waypoint, travelled = stop, 0.0
+        while travelled < _STOP_LINE_SEARCH_M:
+            options = waypoint.next(_STOP_LINE_STEP_M)
+            if not options:
+                return stop
+            waypoint = options[0]
+            travelled += _STOP_LINE_STEP_M
+            if waypoint.is_junction:
+                return waypoint
+        return stop
 
     def _speed_limit_mps(self) -> float:
         return float(self._ego.get_speed_limit() or 0.0) / 3.6  # CARLA reports km/h

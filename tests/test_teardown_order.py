@@ -30,7 +30,12 @@ class _Recorder:
         def set_synchronous_mode(enabled: bool) -> None:
             self.events.append(f"traffic_manager_sync:{enabled}")
 
-        return SimpleNamespace(set_synchronous_mode=set_synchronous_mode)
+        def shut_down() -> None:
+            self.events.append("traffic_manager_shutdown")
+
+        return SimpleNamespace(
+            set_synchronous_mode=set_synchronous_mode, shut_down=shut_down
+        )
 
 
 def build_adapter(recorder: _Recorder) -> CarlaWorldAdapter:
@@ -120,3 +125,40 @@ def test_a_failing_actor_teardown_does_not_stop_the_rest():
         event.split(":", 1)[1] for event in recorder.events if event.startswith("destroy:")
     }
     assert {"bg1", "ego"} <= destroyed
+
+
+def test_the_traffic_manager_is_shut_down_so_its_port_is_free():
+    """Otherwise the next process waits four seconds for a manager that is gone.
+
+    The server registers a traffic manager against a port and keeps that
+    registration after the client that made it exits. A later process asking
+    for the same port tries to reach a manager that is no longer there, waits
+    for the attempt to time out, and only then creates a new one. Measured
+    against a real server: 0.05 s for the first process to claim a port, 4.05 s
+    for every process after it, 0.05 s throughout once this call is made.
+
+    After the vehicles are destroyed, not before, so that standing the manager
+    down keeps the ordering the test above pins.
+    """
+    recorder = _Recorder()
+    build_adapter(recorder).close()
+
+    assert "traffic_manager_shutdown" in recorder.events
+    shutdown = recorder.events.index("traffic_manager_shutdown")
+    last_destroy = max(
+        index for index, event in enumerate(recorder.events) if event.startswith("destroy:")
+    )
+    assert shutdown > last_destroy
+
+
+def test_an_old_client_without_shut_down_still_tears_down():
+    """`shut_down` is not in every CARLA build; its absence must not abort."""
+    recorder = _Recorder()
+    adapter = build_adapter(recorder)
+    adapter._traffic_manager = SimpleNamespace(
+        set_synchronous_mode=lambda enabled: recorder.events.append(
+            f"traffic_manager_sync:{enabled}"
+        )
+    )
+    adapter.close()
+    assert any(event.startswith("destroy:") for event in recorder.events)

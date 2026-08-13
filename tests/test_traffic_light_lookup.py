@@ -54,6 +54,7 @@ class _Lookup:
     """The lookup methods, borrowed off the adapter and given stubs to walk."""
 
     _governing_traffic_light = CarlaWorldAdapter._governing_traffic_light
+    _ego_waypoint = CarlaWorldAdapter._ego_waypoint
     _lanes_ahead = CarlaWorldAdapter._lanes_ahead
     _lights_by_lane_ahead = CarlaWorldAdapter._lights_by_lane_ahead
     _stop_lines_by_lane = CarlaWorldAdapter._stop_lines_by_lane
@@ -150,6 +151,13 @@ def test_nothing_governs_a_vehicle_already_inside_the_junction():
     inside[-1]._following = lane(3, -1, 20)
     lookup = _Lookup(inside, [light_on((3, -1))])
     assert lookup._governing_traffic_light() is None
+
+    # Not even a light we are standing inside the volume of, which is the
+    # case that matters: a junction has a light on each arm, each volume
+    # reaches a couple of metres past its own line, and a vehicle in the
+    # middle can be inside one belonging to traffic that crosses its path.
+    standing_in_one = _Lookup(inside, [light_on((3, -1))], at_light=light_on((9, 9)))
+    assert standing_in_one._governing_traffic_light() is None
 
 
 def test_the_walk_does_not_reach_past_the_junction_it_arrives_at():

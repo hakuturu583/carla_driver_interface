@@ -531,16 +531,31 @@ class CarlaWorldAdapter:
         on one of those lanes governs us. That is the question a driver
         answers by looking.
 
-        Falls back to `is_at_traffic_light` when the sight distance is zero,
-        and whenever the walk finds nothing -- a light on a lane the graph does
-        not reach still governs us once we are standing in its volume.
+        Inside a junction, nothing governs us at all. Having crossed the line
+        the thing to do is clear the box, so no light in there is ours to read
+        -- and the trigger volumes make that an active hazard rather than a
+        nicety, since a volume reaches a couple of metres past its own line and
+        a junction has four of them. A vehicle in the middle can be standing in
+        the volume of a light governing traffic that crosses its path, and be
+        told to stop where stopping is worst.
+
+        Falls back to `is_at_traffic_light` when the sight distance is zero --
+        which restores the previous behaviour exactly -- and, outside a
+        junction, whenever the walk finds nothing: a light on a lane the graph
+        does not reach still governs us once we are standing in its volume.
         """
         sight = self.config.traffic_light_sight_distance_m
         if sight > 0.0:
-            lanes = self._lanes_ahead(sight)
-            for light in self._lights_by_lane_ahead(lanes):
+            waypoint = self._ego_waypoint()
+            if waypoint is not None and waypoint.is_junction:
+                return None
+            for light in self._lights_by_lane_ahead(self._lanes_ahead(sight)):
                 return light
         return self._ego.get_traffic_light() if self._ego.is_at_traffic_light() else None
+
+    def _ego_waypoint(self) -> Any:
+        """Where the ego sits on the lane graph, or ``None`` if nowhere."""
+        return self._map.get_waypoint(self._ego.get_transform().location, project_to_road=True)
 
     def _lanes_ahead(self, distance_m: float) -> list[tuple[int, int]]:
         """``(road_id, lane_id)`` of the lanes up to the next junction.
@@ -567,7 +582,7 @@ class CarlaWorldAdapter:
         reported different lights, 76 m away one step and 3.9 m the next.
         """
         step = max(1.0, self.config.route_resolution_m)
-        waypoint = self._map.get_waypoint(self._ego.get_transform().location, project_to_road=True)
+        waypoint = self._ego_waypoint()
         if waypoint is None or waypoint.is_junction:
             return []
         lanes = [(waypoint.road_id, waypoint.lane_id)]

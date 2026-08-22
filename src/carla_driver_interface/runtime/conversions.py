@@ -30,6 +30,7 @@ absent in CI), these functions take plain floats and tuples.  The adapter in
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -68,6 +69,12 @@ def seconds_to_us(seconds: float, epoch_offset_us: int = 0) -> int:
 def carla_vector_to_local(x: float, y: float, z: float) -> np.ndarray:
     """Mirror a CARLA world/relative vector into the right-handed convention."""
     return np.array([x, -y, z], dtype=np.float64)
+
+
+def waypoint_to_local(waypoint: Any) -> np.ndarray:
+    """A lane waypoint's position, mirrored into the right-handed convention."""
+    location = waypoint.transform.location
+    return carla_vector_to_local(location.x, location.y, location.z)
 
 
 def carla_rotation_to_quat_xyzw(pitch_deg: float, yaw_deg: float, roll_deg: float) -> np.ndarray:

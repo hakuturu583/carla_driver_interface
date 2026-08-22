@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from carla_driver_interface.geometry import Pose
-from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
+from carla_driver_interface.runtime.ground_truth import CarlaGroundTruth
 from carla_driver_interface.runtime.world import EgoState
 
 
@@ -52,25 +52,27 @@ def light_with_stop_lines(*points_in_local: tuple[float, float]) -> SimpleNamesp
     return SimpleNamespace(get_stop_waypoints=lambda: waypoints, id=id(waypoints))
 
 
-class _Geometry:
-    """Just the two methods under test, borrowed off the adapter.
+def geometry() -> CarlaGroundTruth:
+    """A reader holding nothing but the caches the geometry needs.
 
-    Neither touches the simulator, so there is no reason to stand up a real
-    :class:`CarlaWorldAdapter` -- which would need a CARLA server -- to
-    exercise a purely geometric property.
+    The two methods under test never reach the simulator, and the reader no
+    longer insists on one existing: a world, an ego and a map are constructor
+    arguments now, and these do not use them.
     """
-
-    _waypoint_to_local = CarlaWorldAdapter._waypoint_to_local
-    _traffic_light_distance = CarlaWorldAdapter._traffic_light_distance
-    _stop_line_points = CarlaWorldAdapter._stop_line_points
-    _junction_mouth = CarlaWorldAdapter._junction_mouth
-
-    def __init__(self) -> None:
-        self._stop_line_points_by_light: dict[int, list] = {}
+    return CarlaGroundTruth(
+        world=None,
+        ego=None,
+        carla_map=None,
+        config=SimpleNamespace(
+            traffic_light_sight_distance_m=60.0,
+            route_resolution_m=2.0,
+        ),
+        map_name="Stub",
+    )
 
 
 def distance(light, ego: EgoState) -> float:
-    return _Geometry()._traffic_light_distance(light, ego)
+    return geometry()._traffic_light_distance(light, ego)
 
 
 def test_no_light_reports_a_negative_distance():

@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from carla_driver_interface.geometry import Pose
-from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
+from carla_driver_interface.runtime.ground_truth import CarlaGroundTruth
 
 
 def actor(
@@ -56,16 +56,15 @@ class _ActorList:
         return [a for a in self._actors if fnmatch.fnmatch(a.type_id, pattern)]
 
 
-class _Ground:
-    """The ground-truth methods, borrowed off the adapter and given stubs."""
-
-    _actor_states = CarlaWorldAdapter._actor_states
-    _reportable_actors = CarlaWorldAdapter._reportable_actors
-
-    def __init__(self, actors: list[Any], ego_id: int = 1, horizon_m: float = 150.0) -> None:
-        self._world = SimpleNamespace(get_actors=lambda: _ActorList(actors))
-        self._ego = SimpleNamespace(id=ego_id)
-        self.config = SimpleNamespace(actor_horizon_m=horizon_m)
+def ground(actors: list[Any], ego_id: int = 1, horizon_m: float = 150.0) -> CarlaGroundTruth:
+    """A reader over a stub world holding *actors*."""
+    return CarlaGroundTruth(
+        world=SimpleNamespace(get_actors=lambda: _ActorList(actors)),
+        ego=SimpleNamespace(id=ego_id),
+        carla_map=None,
+        config=SimpleNamespace(actor_horizon_m=horizon_m),
+        map_name="Stub",
+    )
 
 
 def ego_state(x: float = 0.0, y: float = 0.0) -> SimpleNamespace:
@@ -75,7 +74,7 @@ def ego_state(x: float = 0.0, y: float = 0.0) -> SimpleNamespace:
 def states_for(
     actors: list[Any], ego_id: int = 1, ego_x: float = 0.0, horizon_m: float = 150.0
 ) -> list[Any]:
-    return _Ground(actors, ego_id=ego_id, horizon_m=horizon_m)._actor_states(ego_state(ego_x))
+    return ground(actors, ego_id=ego_id, horizon_m=horizon_m)._actor_states(ego_state(ego_x))
 
 
 def test_vehicles_are_reported() -> None:

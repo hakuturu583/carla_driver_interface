@@ -18,7 +18,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
+from carla_driver_interface.runtime.ground_truth import CarlaGroundTruth
 
 
 def waypoint(
@@ -50,36 +50,31 @@ def light_on(*lanes: tuple[int, int]) -> SimpleNamespace:
     )
 
 
-class _Lookup:
-    """The lookup methods, borrowed off the adapter and given stubs to walk."""
+def reader(
+    path: list[SimpleNamespace],
+    lights: list[Any],
+    sight_distance_m: float = 60.0,
+    at_light: Any = None,
+) -> CarlaGroundTruth:
+    """A reader over stub lanes and lights.
 
-    _governing_traffic_light = CarlaWorldAdapter._governing_traffic_light
-    _ego_waypoint = CarlaWorldAdapter._ego_waypoint
-    _lanes_ahead = CarlaWorldAdapter._lanes_ahead
-    _lights_by_lane_ahead = CarlaWorldAdapter._lights_by_lane_ahead
-    _stop_lines_by_lane = CarlaWorldAdapter._stop_lines_by_lane
-
-    def __init__(
-        self,
-        path: list[SimpleNamespace],
-        lights: list[Any],
-        sight_distance_m: float = 60.0,
-        at_light: Any = None,
-    ) -> None:
-        self.config = SimpleNamespace(
-            traffic_light_sight_distance_m=sight_distance_m,
-            route_resolution_m=2.0,
-        )
-        self._stop_lines = None
-        self._map = SimpleNamespace(get_waypoint=lambda *_a, **_k: path[0] if path else None)
-        self._world = SimpleNamespace(
-            get_actors=lambda: SimpleNamespace(filter=lambda _pattern: lights)
-        )
-        self._ego = SimpleNamespace(
+    No adapter and no server: the reader takes a world, an ego and a map, and
+    stubs of those are all this property needs.
+    """
+    return CarlaGroundTruth(
+        world=SimpleNamespace(get_actors=lambda: SimpleNamespace(filter=lambda _p: lights)),
+        ego=SimpleNamespace(
             get_transform=lambda: SimpleNamespace(location=SimpleNamespace(x=0.0, y=0.0, z=0.0)),
             is_at_traffic_light=lambda: at_light is not None,
             get_traffic_light=lambda: at_light,
-        )
+        ),
+        carla_map=SimpleNamespace(get_waypoint=lambda *_a, **_k: path[0] if path else None),
+        config=SimpleNamespace(
+            traffic_light_sight_distance_m=sight_distance_m,
+            route_resolution_m=2.0,
+        ),
+        map_name="Stub",
+    )
 
 
 def test_a_light_down_the_road_is_reported_before_its_trigger_volume():
@@ -92,13 +87,13 @@ def test_a_light_down_the_road_is_reported_before_its_trigger_volume():
     path = lane(1, -1, 20)
     path[-1]._following = lane(2, -1, 20)
     governing = light_on((2, -1))
-    assert _Lookup(path, [governing])._governing_traffic_light() is governing
+    assert reader(path, [governing])._governing_traffic_light() is governing
 
 
 def test_a_light_on_another_lane_does_not_govern_us():
     """Cross traffic has stop lines too, and they are not ours."""
     path = lane(1, -1, 20)
-    assert _Lookup(path, [light_on((7, 3))])._governing_traffic_light() is None
+    assert reader(path, [light_on((7, 3))])._governing_traffic_light() is None
 
 
 def test_the_first_light_along_the_lane_governs():
@@ -107,7 +102,7 @@ def test_the_first_light_along_the_lane_governs():
     path[-1]._following = lane(2, -1, 5)
     path[-1]._following[-1]._following = lane(3, -1, 5)
     near, far = light_on((2, -1)), light_on((3, -1))
-    assert _Lookup(path, [far, near])._governing_traffic_light() is near
+    assert reader(path, [far, near])._governing_traffic_light() is near
 
 
 def test_the_walk_stops_at_the_sight_distance():
@@ -115,15 +110,15 @@ def test_the_walk_stops_at_the_sight_distance():
     the policy brake for something two junctions away."""
     path = lane(1, -1, 3)
     path[-1]._following = lane(2, -1, 3)
-    lookup = _Lookup(path, [light_on((2, -1))], sight_distance_m=2.0)
-    assert lookup._governing_traffic_light() is None
+    subject = reader(path, [light_on((2, -1))], sight_distance_m=2.0)
+    assert subject._governing_traffic_light() is None
 
 
 def test_zero_sight_distance_restores_carla_s_own_answer():
     """The escape hatch, so a caller can have the previous behaviour exactly."""
     at_light = light_on((9, 9))
-    lookup = _Lookup(lane(1, -1, 5), [light_on((1, -1))], sight_distance_m=0.0, at_light=at_light)
-    assert lookup._governing_traffic_light() is at_light
+    subject = reader(lane(1, -1, 5), [light_on((1, -1))], sight_distance_m=0.0, at_light=at_light)
+    assert subject._governing_traffic_light() is at_light
 
 
 def test_standing_in_a_trigger_volume_still_counts_when_the_walk_finds_nothing():
@@ -134,8 +129,8 @@ def test_standing_in_a_trigger_volume_still_counts_when_the_walk_finds_nothing()
     unambiguous piece of evidence CARLA offers.
     """
     at_light = light_on((9, 9))
-    lookup = _Lookup(lane(1, -1, 5), [light_on((4, 2))], at_light=at_light)
-    assert lookup._governing_traffic_light() is at_light
+    subject = reader(lane(1, -1, 5), [light_on((4, 2))], at_light=at_light)
+    assert subject._governing_traffic_light() is at_light
 
 
 def test_nothing_governs_a_vehicle_already_inside_the_junction():
@@ -149,14 +144,14 @@ def test_nothing_governs_a_vehicle_already_inside_the_junction():
     """
     inside = lane(2, 1, 5, is_junction=True)
     inside[-1]._following = lane(3, -1, 20)
-    lookup = _Lookup(inside, [light_on((3, -1))])
-    assert lookup._governing_traffic_light() is None
+    subject = reader(inside, [light_on((3, -1))])
+    assert subject._governing_traffic_light() is None
 
     # Not even a light we are standing inside the volume of, which is the
     # case that matters: a junction has a light on each arm, each volume
     # reaches a couple of metres past its own line, and a vehicle in the
     # middle can be inside one belonging to traffic that crosses its path.
-    standing_in_one = _Lookup(inside, [light_on((3, -1))], at_light=light_on((9, 9)))
+    standing_in_one = reader(inside, [light_on((3, -1))], at_light=light_on((9, 9)))
     assert standing_in_one._governing_traffic_light() is None
 
 
@@ -174,9 +169,9 @@ def test_the_walk_does_not_reach_past_the_junction_it_arrives_at():
     junction[-1]._following = lane(3, -1, 20)
 
     near, beyond = light_on((1, -1)), light_on((3, -1))
-    assert _Lookup(approach, [beyond, near])._governing_traffic_light() is near
+    assert reader(approach, [beyond, near])._governing_traffic_light() is near
     # And with only the far one to find, nothing is reported at all.
-    assert _Lookup(approach, [beyond])._governing_traffic_light() is None
+    assert reader(approach, [beyond])._governing_traffic_light() is None
 
 
 def test_a_stop_line_on_the_junction_lane_itself_still_counts():
@@ -184,8 +179,8 @@ def test_a_stop_line_on_the_junction_lane_itself_still_counts():
     approach = lane(1, -1, 4)
     approach[-1]._following = lane(2, 1, 3, is_junction=True)
     governing = light_on((2, 1))
-    assert _Lookup(approach, [governing])._governing_traffic_light() is governing
+    assert reader(approach, [governing])._governing_traffic_light() is governing
 
 
 def test_a_map_without_a_lane_under_the_ego_reports_nothing():
-    assert _Lookup([], [light_on((1, -1))])._governing_traffic_light() is None
+    assert reader([], [light_on((1, -1))])._governing_traffic_light() is None

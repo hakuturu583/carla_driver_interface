@@ -19,7 +19,7 @@ is the authority to create any of them.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -31,7 +31,6 @@ from carla_driver_interface.grpc_api import (
     CarlaWeather,
     TrafficLightState,
 )
-from carla_driver_interface.runtime.config import RuntimeConfig
 from carla_driver_interface.runtime.conversions import (
     carla_transform_to_pose,
     carla_vector_to_local,
@@ -39,7 +38,42 @@ from carla_driver_interface.runtime.conversions import (
 )
 from carla_driver_interface.runtime.world import EgoState, WorldSnapshot
 
-__all__ = ["CarlaGroundTruth"]
+__all__ = ["CarlaGroundTruth", "GroundTruthConfig"]
+
+
+class GroundTruthConfig(Protocol):
+    """What :class:`CarlaGroundTruth` needs from a configuration.
+
+    Four numbers, and not one of them describes a simulator connection.  Stated
+    structurally, so :class:`~carla_driver_interface.runtime.config.RuntimeConfig`
+    satisfies it without being told to and no call site has to change.  Declared
+    read-only, because ``RuntimeConfig`` is frozen and a settable member would
+    quietly exclude it -- mypy says so, which is the protocol earning its keep
+    before it has been used for anything.
+
+    The point of writing it down is what it leaves out.  A runtime that owns its
+    own world has no client of ours to point at, no driver address to forward,
+    and no traffic manager whose port would mean anything here -- and reading
+    ground truth never needed any of those.  Taking the whole ``RuntimeConfig``
+    said otherwise, and said it in the one signature such a runtime has to call.
+    """
+
+    @property
+    def traffic_light_sight_distance_m(self) -> float:
+        """How far down its own lane the ego looks for the light governing it."""
+
+    @property
+    def route_resolution_m(self) -> float:
+        """Step size for the lane-graph walk behind that search."""
+
+    @property
+    def actor_horizon_m(self) -> float:
+        """How far from the ego another actor is still reported."""
+
+    @property
+    def send_actor_ground_truth(self) -> bool:
+        """Whether other actors are reported at all."""
+
 
 #: How far past a stop waypoint to look for the junction it governs, and in
 #: what steps. CARLA's stop waypoints sit a median of 5.5 m upstream of their
@@ -69,8 +103,9 @@ class CarlaGroundTruth:
         ego: The ego vehicle actor.
         carla_map: The world's map, passed in rather than fetched because CARLA
             rebuilds the object on every ``get_map()`` call.
-        config: Supplies the sight distance, the actor horizon and the lane-walk
-            step.
+        config: Anything carrying the four settings in :class:`GroundTruthConfig`.
+            A ``RuntimeConfig`` is one such thing; so is a plain object with
+            those attributes.
         map_name: Reported to the policy as the scene it is driving.
     """
 
@@ -79,7 +114,7 @@ class CarlaGroundTruth:
         world: Any,
         ego: Any,
         carla_map: Any,
-        config: RuntimeConfig,
+        config: GroundTruthConfig,
         map_name: str,
     ) -> None:
         self._world = world

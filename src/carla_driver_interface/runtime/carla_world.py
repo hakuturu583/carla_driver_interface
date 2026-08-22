@@ -856,6 +856,28 @@ class CarlaWorldAdapter:
         self._background.clear()
         self._ego = None
 
+        # Give the port back, or the next run waits four seconds for it.
+        #
+        # The server registers a traffic manager against a port and keeps that
+        # registration after the client that made it exits. A later process
+        # asking for the same port therefore tries to reach a manager that is
+        # no longer there, waits for the attempt to time out, and only then
+        # creates a new one. Measured against this server: 0.05 s for the
+        # first process to claim a port, 4.05 s for every process after it,
+        # and 0.05 s throughout once `shut_down` is called -- on a 200-step
+        # rollout that is a ninth of the whole run, paid every time because
+        # the default port never changes.
+        #
+        # After the vehicles are gone rather than before, so that standing the
+        # manager down keeps the ordering that stops it operating on destroyed
+        # actors.
+        if self._traffic_manager is not None:
+            try:
+                self._traffic_manager.shut_down()
+            except (RuntimeError, AttributeError):  # pragma: no cover
+                logger.debug("traffic manager shutdown failed", exc_info=True)
+            self._traffic_manager = None
+
         # Leaving the server in synchronous mode would hang the next client.
         if self._world is not None and self._original_settings is not None:
             self._world.apply_settings(self._original_settings)

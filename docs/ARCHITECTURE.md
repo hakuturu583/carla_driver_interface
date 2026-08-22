@@ -50,6 +50,25 @@ replaces everything else with CARLA.**
 controller, physics and traffic are all roles CARLA already fills, so there is
 nothing to gain from putting a process boundary in front of them.
 
+### The left-hand box is replaceable
+
+`WorldAdapter` is the seam that makes it so. `CarlaWorldAdapter` and `FakeWorld`
+are two implementations of it, and a third can come from outside this
+repository.
+
+A runtime that already owns a CARLA world — a scenario runner, say, with its own
+tick loop, its own NPCs and its own pass/fail conditions — has no use for
+`CarlaRuntime`, which would insist on connecting a second client and loading the
+map over again. It plays the Runtime role itself, speaking the same contract to
+the same unmodified policy. The driver process on the right does not know the
+difference, and cannot: that is what byte-for-byte wire compatibility buys.
+
+Everything inside the left box then goes unused, `carla.TrafficManager`
+included. That costs less than it sounds: the traffic manager drives the
+background vehicles, never the ego, so a runtime bringing its own traffic gives
+up nothing by not using this one. The ego is driven by the policy's plan in
+either arrangement.
+
 ## One policy step
 
 The order follows alpasim's `PolicyEvent`

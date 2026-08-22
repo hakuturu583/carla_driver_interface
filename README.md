@@ -25,6 +25,31 @@ CarlaRuntime ──── egodriver.EgodriverService (same as upstream) ──�
   └ carla.TrafficManager ...... replaces alpasim TrafficService
 ```
 
+### Which half you need
+
+The two halves are independent, and most uses need only one.
+
+| | Driver half | Runtime half |
+| --- | --- | --- |
+| What it is | `BaseDriver`, the servicer, `run_server` | `CarlaRuntime`, `CarlaWorldAdapter` |
+| Use it to | write a policy | close the loop around one |
+| Imports `carla` | **no, never** | yes |
+| Owns | nothing | the client, map, ego, clock and background traffic |
+
+A policy built on the driver half is a gRPC server and nothing else. It never
+touches CARLA, and the `carla` extra is not needed to write, test or ship one.
+
+The runtime half is *a* way to close the loop, not the only one. Anything that
+speaks `egodriver.EgodriverService` can drive the same policy unmodified — a
+scenario runner that already owns a CARLA world plays the Runtime role itself
+and never constructs `CarlaWorldAdapter`. Everything in the left-hand box above
+then goes unused, and the replacement brings its own.
+
+`carla.TrafficManager` is worth naming there, because it is easy to assume it
+has something to do with the ego. It does not. It drives the background vehicles
+`--traffic` spawns; the ego is never registered with it, and follows the
+policy's plan through `TrajectoryFollower`.
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture.
 
 ## Setup

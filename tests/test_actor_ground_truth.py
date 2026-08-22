@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from carla_driver_interface.geometry import Pose
-from carla_driver_interface.runtime.carla_world import CarlaWorldAdapter
+from carla_driver_interface.runtime.ground_truth import CarlaGroundTruth
 
 
 def actor(
@@ -56,23 +56,25 @@ class _ActorList:
         return [a for a in self._actors if fnmatch.fnmatch(a.type_id, pattern)]
 
 
-class _Ground:
-    """The ground-truth methods, borrowed off the adapter and given stubs."""
-
-    _actor_states = CarlaWorldAdapter._actor_states
-    _reportable_actors = CarlaWorldAdapter._reportable_actors
-
-    def __init__(self, actors: list[Any], ego_id: int = 1) -> None:
-        self._world = SimpleNamespace(get_actors=lambda: _ActorList(actors))
-        self._ego = SimpleNamespace(id=ego_id)
+def ground(actors: list[Any], ego_id: int = 1, horizon_m: float = 150.0) -> CarlaGroundTruth:
+    """A reader over a stub world holding *actors*."""
+    return CarlaGroundTruth(
+        world=SimpleNamespace(get_actors=lambda: _ActorList(actors)),
+        ego=SimpleNamespace(id=ego_id),
+        carla_map=None,
+        config=SimpleNamespace(actor_horizon_m=horizon_m),
+        map_name="Stub",
+    )
 
 
 def ego_state(x: float = 0.0, y: float = 0.0) -> SimpleNamespace:
     return SimpleNamespace(pose_local_to_rig=Pose.from_xyz_yaw(x, y, 0.0, 0.0))
 
 
-def states_for(actors: list[Any], ego_id: int = 1, ego_x: float = 0.0) -> list[Any]:
-    return _Ground(actors, ego_id=ego_id)._actor_states(ego_state(ego_x))
+def states_for(
+    actors: list[Any], ego_id: int = 1, ego_x: float = 0.0, horizon_m: float = 150.0
+) -> list[Any]:
+    return ground(actors, ego_id=ego_id, horizon_m=horizon_m)._actor_states(ego_state(ego_x))
 
 
 def test_vehicles_are_reported() -> None:
@@ -132,6 +134,19 @@ def test_the_ego_is_not_reported_to_itself() -> None:
 def test_actors_beyond_the_horizon_are_dropped() -> None:
     reported = states_for([actor(1, "vehicle.ego"), actor(2, "vehicle.audi.tt", x=400.0)])
     assert reported == []
+
+
+def test_the_horizon_is_configurable() -> None:
+    """Narrowing it is how a dense map bounds the payload -- and what it costs."""
+    far = [actor(1, "vehicle.ego"), actor(2, "vehicle.audi.tt", x=80.0)]
+    assert [s.track_id for s in states_for(far, horizon_m=150.0)] == ["2"]
+    assert states_for(far, horizon_m=50.0) == []
+
+
+def test_an_actor_exactly_at_the_horizon_is_kept() -> None:
+    """The bound is exclusive, so the edge case does not flicker with rounding."""
+    edge = [actor(1, "vehicle.ego"), actor(2, "vehicle.audi.tt", x=50.0)]
+    assert [s.track_id for s in states_for(edge, horizon_m=50.0)] == ["2"]
 
 
 def test_pose_is_mirrored_into_the_local_frame() -> None:

@@ -61,6 +61,14 @@ __all__ = ["CarlaWorldAdapter", "load_carla_module"]
 _STOP_LINE_SEARCH_M = 8.0
 _STOP_LINE_STEP_M = 0.5
 
+#: Blueprint patterns for the actors reported as ground truth.
+#:
+#: Pedestrians are matched by their own namespace rather than by ``*walker*``,
+#: which would also catch the ``controller.ai.walker`` actors that steer them --
+#: those are controllers with no body, and reporting one would put a
+#: zero-extent obstacle wherever CARLA happens to keep it.
+_ACTOR_PATTERNS = ("*vehicle*", "walker.pedestrian.*")
+
 
 def load_carla_module(python_path: str | None = None) -> Any:
     """Import ``carla``, optionally from an out-of-tree PythonAPI.
@@ -749,10 +757,21 @@ class CarlaWorldAdapter:
     def _speed_limit_mps(self) -> float:
         return float(self._ego.get_speed_limit() or 0.0) / 3.6  # CARLA reports km/h
 
+    def _reportable_actors(self) -> list[Any]:
+        """Every actor a policy has to keep clear of.
+
+        Vehicles and pedestrians alike: a specification that demands clearance
+        from other road users means all of them, and a driver reading only
+        vehicles satisfies "collision free" while walking through a crossing.
+        The two namespaces are disjoint, so nothing is reported twice.
+        """
+        actors = self._world.get_actors()
+        return [match for pattern in _ACTOR_PATTERNS for match in actors.filter(pattern)]
+
     def _actor_states(self, ego: EgoState) -> list[CarlaActorState]:
         states = []
         ego_position = ego.pose_local_to_rig.position
-        for actor in self._world.get_actors().filter("*vehicle*"):
+        for actor in self._reportable_actors():
             if actor.id == self._ego.id:
                 continue
             transform = actor.get_transform()

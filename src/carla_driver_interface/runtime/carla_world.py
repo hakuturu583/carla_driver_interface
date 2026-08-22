@@ -780,7 +780,7 @@ class CarlaWorldAdapter:
                 (location.x, location.y, location.z),
                 (rotation.pitch, rotation.yaw, rotation.roll),
             )
-            if float(np.linalg.norm(pose.position - ego_position)) > 150.0:
+            if float(np.linalg.norm(pose.position - ego_position)) > self.config.actor_horizon_m:
                 continue
 
             velocity = actor.get_velocity()

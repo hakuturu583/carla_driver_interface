@@ -141,6 +141,17 @@ class RuntimeConfig:
     egomotion_yaw_noise_rad: float = 0.0
     #: Include other actors in the ``CarlaRendererData`` extension payload.
     send_actor_ground_truth: bool = True
+    #: How far from the ego an actor is still reported, in metres.
+    #:
+    #: The payload is a policy's entire account of the traffic around it, so
+    #: this is the range beyond which, as far as any rule about clearance can
+    #: tell, the road is empty. The default is wide enough that nothing a
+    #: policy could still act on is cut: at 150 m even a vehicle closing head-on
+    #: at motorway speed is some four seconds away.
+    #:
+    #: Lower it to bound the payload on maps with dense traffic; the cost of
+    #: doing so is paid in what the policy stops being able to see.
+    actor_horizon_m: float = 150.0
 
     # -- control --
     control: ControlConfig = field(default_factory=ControlConfig)

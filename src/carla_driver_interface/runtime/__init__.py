@@ -16,6 +16,7 @@ from carla_driver_interface.runtime.control import (
     TrajectoryFollower,
     VehicleCommand,
 )
+from carla_driver_interface.runtime.rig import VehicleRig, available_rigs, load_rig, rig_from_toml
 from carla_driver_interface.runtime.route import RouteProvider
 from carla_driver_interface.runtime.world import (
     CameraCapture,
@@ -39,10 +40,14 @@ __all__ = [
     "RuntimeConfig",
     "ScenarioSpec",
     "TrajectoryFollower",
+    "VehicleRig",
     "VehicleCommand",
     "WorldAdapter",
     "WorldSetup",
     "WorldSnapshot",
+    "available_rigs",
     "default_camera_rig",
     "load_carla_module",
+    "load_rig",
+    "rig_from_toml",
 ]

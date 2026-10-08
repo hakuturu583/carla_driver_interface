@@ -15,9 +15,9 @@ from carla_driver_interface.driver.server import run_server
 from carla_driver_interface.runtime.config import (
     RuntimeConfig,
     ScenarioSpec,
-    default_camera_rig,
 )
 from carla_driver_interface.runtime.images import parse_image_format
+from carla_driver_interface.runtime.rig import available_rigs, load_rig
 
 __all__ = ["main"]
 
@@ -50,6 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_run_parser(subparsers)
     _add_demo_parser(subparsers)
     _add_compat_parser(subparsers)
+    _add_rigs_parser(subparsers)
     return parser
 
 
@@ -103,6 +104,14 @@ def _add_common_rollout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--image-format", default="jpeg", help="png or jpeg (default: jpeg)")
     parser.add_argument(
+        "--rig",
+        default="default",
+        help=(
+            "vehicle rig: a name (built-in 'default', or one a policy package registers, "
+            "e.g. 'vision_pilot') or a .toml file. See `carla-driver-interface rigs`."
+        ),
+    )
+    parser.add_argument(
         "--metrics-json",
         default=None,
         help="write the rollout's aggregated metrics to this path",
@@ -123,7 +132,11 @@ def _add_run_parser(subparsers) -> None:
     run.add_argument("--spawn-point", type=int, default=None)
     run.add_argument("--traffic", type=int, default=30, help="background vehicles")
     run.add_argument("--weather", default=None, help="CARLA weather preset, e.g. ClearNoon")
-    run.add_argument("--ego-blueprint", default="vehicle.tesla.model3")
+    run.add_argument(
+        "--ego-blueprint",
+        default=None,
+        help="ego vehicle blueprint (default: the rig's, else vehicle.tesla.model3)",
+    )
     run.add_argument(
         "--rear-axle-offset",
         type=float,
@@ -133,9 +146,15 @@ def _add_run_parser(subparsers) -> None:
             "Overrides the wheel-physics derivation, which is unreliable on CARLA 0.9.x."
         ),
     )
-    run.add_argument("--camera-width", type=int, default=960)
-    run.add_argument("--camera-height", type=int, default=604)
-    run.add_argument("--camera-fov", type=float, default=120.0)
+    run.add_argument(
+        "--camera-width", type=int, default=None, help="override the rig's first camera"
+    )
+    run.add_argument(
+        "--camera-height", type=int, default=None, help="override the rig's first camera"
+    )
+    run.add_argument(
+        "--camera-fov", type=float, default=None, help="override the rig's first camera"
+    )
     _add_common_rollout_args(run)
     run.set_defaults(handler=_cmd_run)
 
@@ -152,22 +171,27 @@ def _cmd_run(args: argparse.Namespace) -> int:
         weather_preset=args.weather,
     )
     config = _base_config(args)
+    cameras = list(config.cameras)
+    # Override only what the flags cover; the mount pose and logical id stay
+    # whatever the rig says, rather than being re-guessed here.
+    overrides = {
+        key: value
+        for key, value in (
+            ("width", args.camera_width),
+            ("height", args.camera_height),
+            ("fov_deg", args.camera_fov),
+        )
+        if value is not None
+    }
+    if overrides:
+        cameras[0] = replace(cameras[0], **overrides)
     config = replace(
         config,
         carla_host=args.carla_host,
         carla_port=args.carla_port,
-        ego_blueprint=args.ego_blueprint,
+        ego_blueprint=args.ego_blueprint or config.ego_blueprint,
         rear_axle_offset_m=args.rear_axle_offset,
-        # Override only what the flags cover; the mount pose and logical id
-        # stay whatever the default rig says, rather than being re-guessed here.
-        cameras=[
-            replace(
-                default_camera_rig()[0],
-                width=args.camera_width,
-                height=args.camera_height,
-                fov_deg=args.camera_fov,
-            )
-        ],
+        cameras=cameras,
     )
 
     world = CarlaWorldAdapter(config, scenario, carla_python_path=args.carla_python_path)
@@ -196,14 +220,19 @@ def _cmd_demo(args: argparse.Namespace) -> int:
 
 
 def _base_config(args: argparse.Namespace) -> RuntimeConfig:
-    return RuntimeConfig(
+    rig = load_rig(args.rig)
+    config = RuntimeConfig(
         driver_address=args.driver,
         max_steps=args.steps,
         policy_timestep_s=args.policy_timestep,
         fixed_delta_s=args.fixed_delta,
         seed=args.seed,
         image_format=parse_image_format(args.image_format),
+        cameras=list(rig.cameras),
     )
+    if rig.ego_blueprint is not None:
+        config = replace(config, ego_blueprint=rig.ego_blueprint)
+    return config
 
 
 def _report(outcome, metrics_path: str | None) -> int:
@@ -227,6 +256,30 @@ def _report(outcome, metrics_path: str | None) -> int:
 # ---------------------------------------------------------------------------
 # compat-report
 # ---------------------------------------------------------------------------
+
+
+def _add_rigs_parser(subparsers) -> None:
+    rigs = subparsers.add_parser("rigs", help="list the vehicle rigs --rig accepts by name")
+    rigs.set_defaults(handler=_cmd_rigs)
+
+
+def _cmd_rigs(args: argparse.Namespace) -> int:
+    for name in available_rigs():
+        try:
+            rig = load_rig(name)
+        except Exception as error:  # a broken plugin must not hide the others
+            print(f"{name}: failed to load ({error})")
+            continue
+        vehicle = rig.ego_blueprint or "(runtime default)"
+        print(f"{name}: {rig.description}" if rig.description else name)
+        print(f"  vehicle: {vehicle}")
+        for cam in rig.cameras:
+            print(
+                f"  camera {cam.logical_id}: {cam.width}x{cam.height} fov={cam.fov_deg:g} "
+                f"at x={cam.x:g} y={cam.y:g} z={cam.z:g} "
+                f"pitch={cam.pitch_deg:g} yaw={cam.yaw_deg:g} roll={cam.roll_deg:g}"
+            )
+    return 0
 
 
 def _add_compat_parser(subparsers) -> None:

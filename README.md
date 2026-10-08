@@ -112,6 +112,48 @@ On CARLA 0.10.x, add `--carla-python-path /path/to/CARLA/PythonAPI/carla/dist`.
 > and centimetres, so if the logged value looks wrong, set it explicitly:
 > `--rear-axle-offset -1.4`.
 
+### Choosing the vehicle and cameras
+
+The runtime owns the sensor rig -- alpasim's `EgodriverService` has no way for
+a driver to ask for one -- but a policy is usually built for a particular rig.
+`--rig` (on `run` and `demo`) picks the ego vehicle and its cameras:
+
+```console
+$ uv run carla-driver-interface rigs                      # what --rig accepts by name
+$ uv run carla-driver-interface run --rig my_rig.toml ...
+$ uv run carla-driver-interface run --rig vision_pilot ... # registered by the vision-pilot package
+```
+
+A rig file lists `CameraConfig` fields per camera, in CARLA's own mount
+convention (what `carla.Transform` takes, relative to the vehicle actor), and
+optionally the vehicle the mounts were measured on:
+
+```toml
+description = "Narrow front camera"
+ego_blueprint = "vehicle.lincoln.mkz_2020"
+
+[[cameras]]
+logical_id = "camera_front"
+width = 1920
+height = 1280
+fov_deg = 50.0
+x = 1.544
+z = 2.116
+pitch_deg = -0.11
+```
+
+A policy package can ship its rig under a name by registering a `VehicleRig`
+(or a function returning one) as an entry point; this project never needs to
+know about it:
+
+```toml
+[project.entry-points."carla_driver_interface.rigs"]
+my_policy = "my_policy.rig:carla_rig"
+```
+
+`--camera-width/--camera-height/--camera-fov` and `--ego-blueprint` still
+override the rig's first camera and vehicle.
+
 ### Compatibility report
 
 ```console

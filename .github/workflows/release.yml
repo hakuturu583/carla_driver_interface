@@ -17,10 +17,6 @@ on:
   # commit on main, never from a later main HEAD, so a merge that landed since
   # cannot leak into it. Every step below is safe to repeat: an existing tag or
   # Release is reused, and files already on PyPI are skipped.
-  #
-  # It also cuts a version that pyproject.toml on main's HEAD already carries
-  # and that has no tag yet -- a version set by hand rather than by a label,
-  # such as the first release, 1.0.0.
   workflow_dispatch:
     inputs:
       version:
@@ -170,15 +166,9 @@ jobs:
               # Finishing a labelled release that failed before its tag.
               sha=$(git log origin/main -1 --format=%H \
                 --grep="^chore: bump version to ${version//./\\.}\$")
-              if [ -z "${sha}" ] && [ "$(read_version origin/main)" = "${version}" ]; then
-                # Cutting a version set by hand (the first release): main's
-                # HEAD carries it and no tag does yet.
-                sha=$(git rev-parse origin/main)
-              fi
             fi
             if [ -z "${sha}" ]; then
-              echo "ERROR: no v${version} tag, no 'chore: bump version to ${version}' commit on main," \
-                "and main's pyproject.toml is not at ${version}"
+              echo "ERROR: no v${version} tag and no 'chore: bump version to ${version}' commit on main"
               exit 1
             fi
             if [ "$(read_version "${sha}")" != "${version}" ]; then

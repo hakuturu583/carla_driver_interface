@@ -171,9 +171,9 @@ PyPI), do not re-run the push run — it would bump again. Run the workflow by h
 `chore: bump version to 1.2.3` commit, never from a later `main`, and reuses an existing
 tag or Release; files already on PyPI are skipped.
 
-The same manual run also cuts a version that `pyproject.toml` on `main` already carries
-and that has no tag yet — which is how the first release, 1.0.0, is made: merge the PR
-that introduced it, then run the workflow with `version` = `1.0.0`.
+The successor keeps the predecessor's version line: it starts from 0.1.0, and the PR
+that introduces it is merged with `bump major`, which releases 1.0.0 like any other
+release.
 
 **Pushing to `main`.** The bump commit and the tag are pushed with `GITHUB_TOKEN`, which
 works while `main` has no branch protection rules. If `main` gets a ruleset whose bypass

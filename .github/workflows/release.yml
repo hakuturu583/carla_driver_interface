@@ -1,0 +1,382 @@
+name: Release
+
+# A merge to main whose PR carries exactly one of the labels `bump patch`,
+# `bump minor` or `bump major` bumps `version` in pyproject.toml, commits
+# "chore: bump version to X" to main, tags vX, creates the GitHub Release and
+# publishes the distributions to PyPI. A merge without a bump label releases
+# nothing. `pr-label-check.yml` makes every PR carry exactly one.
+
+on:
+  push:
+    branches:
+      - main
+  # Finishes the release of a version a labelled merge already bumped to, for
+  # when a later step failed (the tag push, the Release, PyPI) -- re-running
+  # that push run would bump a second time from the old merge commit. It builds
+  # from that version's tag, or else from its "chore: bump version to X"
+  # commit on main, never from a later main HEAD, so a merge that landed since
+  # cannot leak into it. Every step below is safe to repeat: an existing tag or
+  # Release is reused, and files already on PyPI are skipped.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to (finish) releasing, e.g. 1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # A manual release only ever comes from main.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    outputs:
+      new_version: ${{ steps.version.outputs.version }}
+      # Read by the `pypi-*` jobs below: whether this run releases, and the
+      # commit the release was cut from.
+      release: ${{ steps.version.outputs.release }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # GH_PAT, when the repository has one, lets `git push origin main`
+          # (version-bump commit) and `git push origin v<version>` (release
+          # tag) satisfy a branch ruleset on main whose bypass list does not
+          # include github-actions[bot] (direct pushes are then rejected with
+          # GH013). Without the secret, GITHUB_TOKEN is used, which is enough
+          # while main has no protection rules -- an empty token would fail
+          # the checkout itself.
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Get merged PR labels
+        if: github.event_name == 'push'
+        id: pr-labels
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+
+            const mergedPR = prs.find((pr) => pr.merged_at !== null);
+            if (!mergedPR) {
+              console.log('No merged PR found for this commit');
+              core.setOutput('bump_type', 'none');
+              return;
+            }
+
+            console.log(`Found merged PR #${mergedPR.number}`);
+            const labels = mergedPR.labels.map((label) => label.name);
+            console.log(`PR labels: ${labels.join(', ')}`);
+
+            core.setOutput('pr_number', mergedPR.number);
+            core.setOutput('pr_title', mergedPR.title);
+            core.setOutput('pr_url', mergedPR.html_url);
+            core.setOutput('pr_author', mergedPR.user.login);
+
+            const bumps = ['major', 'minor', 'patch'].filter((kind) =>
+              labels.includes(`bump ${kind}`),
+            );
+            if (bumps.length > 1) {
+              core.setFailed(
+                `PR #${mergedPR.number} carries more than one bump label (${bumps.join(', ')}); ` +
+                  'nothing was released. Release by hand with workflow_dispatch after fixing the version.',
+              );
+              return;
+            }
+            core.setOutput('bump_type', bumps.length === 1 ? bumps[0] : 'none');
+
+      - name: Bump version
+        if: github.event_name == 'push' && steps.pr-labels.outputs.bump_type != 'none'
+        id: bump-version
+        env:
+          BUMP_TYPE: ${{ steps.pr-labels.outputs.bump_type }}
+        run: |
+          current_version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          if ! [[ "${current_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: could not read a X.Y.Z version from pyproject.toml (got '${current_version}')"
+            exit 1
+          fi
+          echo "Current version: ${current_version}"
+
+          IFS='.' read -r major minor patch <<< "${current_version}"
+          case "${BUMP_TYPE}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          new_version="${major}.${minor}.${patch}"
+          echo "New version: ${new_version}"
+
+          sed -i "s/^version = \".*\"/version = \"${new_version}\"/" pyproject.toml
+
+          # Keep uv.lock in sync with the bumped version. The editable package
+          # entry in uv.lock records the version, so bumping pyproject.toml
+          # without re-locking leaves uv.lock stale. `uv lock` keeps every
+          # other pin as it is.
+          uv lock
+
+          echo "new_version=${new_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit version bump
+        if: github.event_name == 'push' && steps.pr-labels.outputs.bump_type != 'none'
+        env:
+          NEW_VERSION: ${{ steps.bump-version.outputs.new_version }}
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          git add pyproject.toml uv.lock
+          git commit -m "chore: bump version to ${NEW_VERSION}"
+          git push origin HEAD:main
+
+      - name: Resolve the version to release
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          BUMP_TYPE: ${{ steps.pr-labels.outputs.bump_type }}
+          BUMPED: ${{ steps.bump-version.outputs.new_version }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          read_version() {
+            git show "$1:pyproject.toml" | sed -n 's/^version = "\(.*\)"/\1/p'
+          }
+
+          if [ "${EVENT}" = "workflow_dispatch" ]; then
+            version="${REQUESTED#v}"
+            if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ERROR: '${REQUESTED}' is not a version like 1.0.0"
+              exit 1
+            fi
+            git fetch --tags --quiet origin
+            if git rev-parse --verify --quiet "refs/tags/v${version}" > /dev/null; then
+              # Finishing a release whose tag already exists.
+              sha=$(git rev-list -n 1 "v${version}")
+            else
+              # Finishing a labelled release that failed before its tag.
+              sha=$(git log origin/main -1 --format=%H \
+                --grep="^chore: bump version to ${version//./\\.}\$")
+            fi
+            if [ -z "${sha}" ]; then
+              echo "ERROR: no v${version} tag and no 'chore: bump version to ${version}' commit on main"
+              exit 1
+            fi
+            if [ "$(read_version "${sha}")" != "${version}" ]; then
+              echo "ERROR: ${sha} does not carry version ${version}"
+              exit 1
+            fi
+          elif [ "${BUMP_TYPE}" != "none" ]; then
+            version="${BUMPED}"
+            sha=$(git rev-parse HEAD)
+          else
+            echo "No version bump label found. Skipping release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Only the version main is at becomes "latest": finishing an older
+          # release must not move the latest Release back.
+          if [ "$(read_version origin/main)" = "${version}" ] || [ "${sha}" = "$(git rev-parse HEAD)" ]; then
+            latest=true
+          else
+            latest=false
+          fi
+
+          echo "Releasing v${version} from ${sha} (latest: ${latest})"
+          {
+            echo "version=${version}"
+            echo "sha=${sha}"
+            echo "latest=${latest}"
+            echo "release=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create Git tag
+        if: steps.version.outputs.release == 'true'
+        env:
+          TAG: v${{ steps.version.outputs.version }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null; then
+            echo "${TAG} already exists; not moving it."
+            exit 0
+          fi
+          git tag "${TAG}" "${SHA}"
+          git push origin "${TAG}"
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.release == 'true'
+        uses: actions/github-script@v7
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.version }}
+          LATEST: ${{ steps.version.outputs.latest }}
+          BUMP_TYPE: ${{ steps.pr-labels.outputs.bump_type }}
+          PR_NUMBER: ${{ steps.pr-labels.outputs.pr_number }}
+          PR_TITLE: ${{ steps.pr-labels.outputs.pr_title }}
+          PR_URL: ${{ steps.pr-labels.outputs.pr_url }}
+          PR_AUTHOR: ${{ steps.pr-labels.outputs.pr_author }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = `v${process.env.NEW_VERSION}`;
+
+            try {
+              const { data: existing } = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+              console.log(`Release already exists: ${existing.html_url}`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            // A labelled merge links its PR; a manual release lets GitHub list
+            // what changed since the previous tag.
+            const fromPR = Boolean(process.env.PR_NUMBER);
+            const releaseBody = fromPR
+              ? [
+                  `## What's Changed`,
+                  ``,
+                  `- ${process.env.PR_TITLE} (#${process.env.PR_NUMBER}) by @${process.env.PR_AUTHOR}`,
+                  ``,
+                  `**Full Changelog**: ${process.env.PR_URL}`,
+                  ``,
+                  `---`,
+                  ``,
+                  `This release was created by automated workflow (bump ${process.env.BUMP_TYPE}).`,
+                ].join('\n')
+              : 'This release was created by a manual run of the release workflow.';
+
+            const { data: release } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Release ${tag}`,
+              body: releaseBody,
+              generate_release_notes: !fromPR,
+              make_latest: process.env.LATEST === 'true' ? 'true' : 'false',
+              draft: false,
+              prerelease: false,
+            });
+            console.log(`Created release: ${release.html_url}`);
+
+  # Builds the release commit's wheel and sdist. The package is pure Python
+  # (`py3-none-any`), so one wheel serves every interpreter -- which is what
+  # `pypi-install` checks.
+  pypi-build:
+    name: build the distributions
+    needs: release
+    if: needs.release.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check the package version matches the release
+        env:
+          VERSION: ${{ needs.release.outputs.new_version }}
+        run: |
+          pkg=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          echo "release=${VERSION} pyproject.toml=${pkg}"
+          test "${pkg}" = "${VERSION}"
+
+      - name: Build the wheel and sdist
+        run: uv build --out-dir dist
+
+      # PyPI rejects an upload whose metadata it cannot render, and it does so
+      # after the OIDC exchange -- so the same check runs here first, where
+      # failing costs nothing.
+      - name: Check the metadata
+        run: uvx twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+          if-no-files-found: error
+
+  pypi-install:
+    name: install on Python ${{ matrix.python-version }}
+    needs: pypi-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The whole of `requires-python`, as CI's test matrix.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: astral-sh/setup-uv@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+
+      # From PyPI's dependencies, the way a user installs it -- not from this
+      # repository's lock.
+      - name: Install the wheel into a clean environment
+        run: |
+          uv venv --python "${{ matrix.python-version }}" "${RUNNER_TEMP}/fresh"
+          uv pip install --python "${RUNNER_TEMP}/fresh" dist/carla_driver_interface-*.whl
+
+      - name: Import it and run its console script
+        run: |
+          "${RUNNER_TEMP}/fresh/bin/python" - <<'PY'
+          import importlib.metadata as metadata
+          import sys
+
+          import carla_driver_interface.server
+          import carla_driver_interface.testing
+
+          print(sys.version)
+          print("carla-driver-interface", metadata.version("carla-driver-interface"))
+          PY
+          "${RUNNER_TEMP}/fresh/bin/carla-driver-interface" --help > /dev/null
+
+  # Trusted Publishing: no API token is stored in this repository. Configure it
+  # once on PyPI -- Publishing -> add a (pending) publisher for the project
+  # `carla-driver-interface` with owner `hakuturu583`, repository
+  # `carla_driver_interface`, workflow `release.yml`, environment `pypi` -- and
+  # create the `pypi` environment in this repository's settings. Until then
+  # this job fails and the distributions remain available as the `pypi-dist`
+  # artifact.
+  pypi-publish:
+    name: publish to PyPI
+    needs: [release, pypi-build, pypi-install]
+    if: needs.release.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/carla-driver-interface
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+
+      # PyPI never replaces a file, so skipping what is already there makes a
+      # manual re-run of a release (workflow_dispatch) upload only what an
+      # earlier attempt did not.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

@@ -119,6 +119,10 @@ class SessionState:
     uuid: str
     seed: int
     scene_id: str
+    #: Declared cameras by logical id, as contract revision 2 declares them:
+    #: ``rig_to_camera`` is the camera's optical frame in the rig (x right, y down,
+    #: z along the optical axis), whatever the client spoke.
+    #: :func:`~carla_driver_interface.geometry.optical_to_body` gives the body's.
     cameras: Dict[str, AvailableCamera]
 
     #: Bounded history per sensor, by logical id, oldest first; ``[]`` for every

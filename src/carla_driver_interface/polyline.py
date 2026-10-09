@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
 """Arc-length operations on polylines, shared by the driver and the runtime.
 
 Routes and plans are both polylines, and both halves of the package need the
@@ -69,7 +68,9 @@ def sample(
 
     # np.interp clamps at both ends, which is the behaviour we want everywhere
     # except past the end under `extrapolate`.
-    sampled = np.stack([np.interp(queries, arc, points[:, axis]) for axis in range(3)], axis=1)
+    sampled = np.stack(
+        [np.interp(queries, arc, points[:, axis]) for axis in range(3)], axis=1
+    )
 
     if extrapolate:
         beyond = queries > total
@@ -108,7 +109,9 @@ def max_curvature(points: np.ndarray) -> float:
     bc = np.linalg.norm(c - b, axis=1)
     ca = np.linalg.norm(a - c, axis=1)
     # Twice the triangle area, via the 2-D cross product.
-    cross = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
+    cross = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (
+        c[:, 0] - a[:, 0]
+    )
 
     denominator = ab * bc * ca
     usable = denominator > 1e-18

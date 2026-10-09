@@ -1,269 +1,233 @@
-# SPDX-License-Identifier: Apache-2.0
-"""Poses and trajectories in the alpasim convention, backed by numpy only.
+"""Rigid-body primitives for the ``egodriver`` gRPC contract.
 
-alpasim's own geometry types live in a Rust extension (``utils_rs``) that is not
-worth pulling in here, so this module reimplements the small subset the driver
-contract needs, matching upstream's conventions exactly:
+The alpasim wire format expresses every pose as a translation plus a quaternion
+(:class:`~carla_driver_interface.protocol.Pose`) and every path as a
+list of timestamped poses
+(:class:`~carla_driver_interface.protocol.Trajectory`).  This module
+provides the Python-side counterparts and the conversions between them.
 
-* Right-handed frames.  ``local`` is ENU-like and inertial; ``rig`` is
-  body-fixed with x forward, y left, z up, origin at the rear axle centre
-  projected onto the ground.
-* Poses are **active** transforms: ``pose_local_to_rig`` maps a point given in
-  the rig frame into the local frame, and equally *is* the rig's pose in local.
-* Composition is ``a_to_c = a_to_b @ b_to_c``.
-* Quaternions are stored ``(x, y, z, w)`` (scipy order) but the proto carries
-  ``(w, x, y, z)``; the conversions here are the only place that matters.
+The rotation maths is scipy's (:class:`scipy.spatial.transform.Rotation` and
+:class:`~scipy.spatial.transform.Slerp`); this module only adds what the wire needs on
+top -- a pose type pairing a translation with a rotation, timestamped sequences of them,
+and the protobuf conversions.
+
+Conventions, matching alpasim:
+
+* Quaternions are in scipy's ``(x, y, z, w)`` order and converted to the protobuf's
+  ``(w, x, y, z)`` field order on the wire.
+* Composition is the standard rigid transform: ``(a @ b).position ==
+  a.rotation_matrix @ b.position + a.position``.  So ``ego_pose @ pose_in_rig`` lifts a
+  rig-frame pose into the local frame, and ``ego_pose.inverse() @ pose_in_local`` does
+  the reverse.
+* The frame itself is **right-handed** (x forward, y left, z up), unlike CARLA's
+  left-handed world.  The CARLA runtime (autoware_carla_scenario's
+  ``driver.observation``) performs that conversion; nothing in this module knows about
+  CARLA.
+
+:class:`Pose` and :class:`Trajectory` keep the class and method names they had in
+carla-driver-interface 0.1.0, which this release succeeds, so code using them ports
+unchanged; 0.1.0's free quaternion helpers (``quat_mul``, ``yaw_to_quat_xyzw``, ...) gave
+way to scipy's :class:`~scipy.spatial.transform.Rotation`.
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
+from scipy.spatial.transform import Rotation, Slerp
 
-from carla_driver_interface.grpc_api import (
-    DynamicState,
-    PoseAtTime,
-    Quat,
-    Vec3,
-)
-from carla_driver_interface.grpc_api import Pose as PoseProto
-from carla_driver_interface.grpc_api import Trajectory as TrajectoryProto
+from ._proto import common_pb2
 
-__all__ = [
-    "Pose",
-    "Trajectory",
-    "dynamic_state_proto",
-    "euler_zyx_to_quat_xyzw",
-    "quat_conjugate",
-    "quat_mul",
-    "quat_rotate",
-    "quat_to_yaw",
-    "yaw_to_quat_xyzw",
-]
+__all__ = ["Pose", "Trajectory", "waypoints_to_proto"]
+
+#: Quaternion norms below this are treated as degenerate and replaced by the identity.
+_QUAT_NORM_EPSILON: float = 1e-12
+
+_AXES = "xyz"
 
 
-def euler_zyx_to_quat_xyzw(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    """Intrinsic Z-Y-X Euler angles (radians) -> quaternion ``(x, y, z, w)``.
+def _rotation(quat_xyzw: ArrayLike) -> Rotation:
+    """*quat_xyzw* as a rotation; a zero quaternion is the identity.
 
-    Yaw is applied first, then pitch, then roll -- Unreal's order, which is what
-    :mod:`carla_driver_interface.runtime.conversions` needs after mirroring.
+    scipy refuses a zero-norm quaternion, but a default-constructed protobuf
+    message (all fields zero) is one, and must round-trip to the identity rather
+    than fail.
     """
-    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
-    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
-    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
-    return np.array(
-        [
-            sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-            cr * cp * cy + sr * sp * sy,
-        ],
-        dtype=np.float64,
-    )
+    quat = np.asarray(quat_xyzw, dtype=np.float64).reshape(-1)
+    if quat.size != 4:
+        raise ValueError(f"expected 4 quaternion components, got {quat.size}")
+    if float(np.linalg.norm(quat)) < _QUAT_NORM_EPSILON:
+        return Rotation.identity()
+    return Rotation.from_quat(quat)
 
 
-def yaw_to_quat_xyzw(yaw: float) -> np.ndarray:
-    """Quaternion ``(x, y, z, w)`` for a rotation of ``yaw`` radians about +z."""
-    half = 0.5 * yaw
-    return np.array([0.0, 0.0, math.sin(half), math.cos(half)], dtype=np.float64)
-
-
-def quat_mul(a_xyzw: np.ndarray, b_xyzw: np.ndarray) -> np.ndarray:
-    """Hamilton product ``a * b``, i.e. apply ``b`` first, then ``a``."""
-    ax, ay, az, aw = (float(v) for v in a_xyzw)
-    bx, by, bz, bw = (float(v) for v in b_xyzw)
-    return np.array(
-        [
-            aw * bx + ax * bw + ay * bz - az * by,
-            aw * by - ax * bz + ay * bw + az * bx,
-            aw * bz + ax * by - ay * bx + az * bw,
-            aw * bw - ax * bx - ay * by - az * bz,
-        ],
-        dtype=np.float64,
-    )
-
-
-def quat_conjugate(quat_xyzw: np.ndarray) -> np.ndarray:
-    """Conjugate, which for a unit quaternion is also its inverse."""
-    x, y, z, w = (float(v) for v in quat_xyzw)
-    return np.array([-x, -y, -z, w], dtype=np.float64)
-
-
-def quat_rotate(quat_xyzw: np.ndarray, vector: np.ndarray) -> np.ndarray:
-    """Rotate a single 3-vector by a unit quaternion.
-
-    Written out in scalars rather than with ``np.cross``: for 3-vectors numpy's
-    per-call overhead is several times the arithmetic, and this sits on the
-    closed loop's hot path.
-    """
-    qx, qy, qz, qw = (float(v) for v in quat_xyzw)
-    vx, vy, vz = (float(v) for v in vector)
-
-    # t = 2 * (q_vec x v)
-    tx = 2.0 * (qy * vz - qz * vy)
-    ty = 2.0 * (qz * vx - qx * vz)
-    tz = 2.0 * (qx * vy - qy * vx)
-
-    # v + w * t + q_vec x t
-    return np.array(
-        [
-            vx + qw * tx + qy * tz - qz * ty,
-            vy + qw * ty + qz * tx - qx * tz,
-            vz + qw * tz + qx * ty - qy * tx,
-        ],
-        dtype=np.float64,
-    )
-
-
-def _unchecked_pose(position: np.ndarray, quat_xyzw: np.ndarray) -> Pose:
-    """Build a :class:`Pose` from values already known to be valid.
-
-    ``Pose.__post_init__`` re-converts and re-normalises on every construction,
-    which is right for the public API and pure overhead for results we just
-    computed from unit quaternions. Composition allocates a `Pose` per call on
-    the hot path, so this bypass is worth the sharp edge.
-    """
-    pose = object.__new__(Pose)
-    object.__setattr__(pose, "position", position)
-    object.__setattr__(pose, "quat_xyzw", quat_xyzw)
-    return pose
-
-
-def quat_to_yaw(quat_xyzw: np.ndarray) -> float:
-    """Yaw in radians extracted from a ``(x, y, z, w)`` quaternion."""
-    x, y, z, w = (float(v) for v in quat_xyzw)
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return math.atan2(siny_cosp, cosy_cosp)
-
-
-def _quat_to_matrix(quat_xyzw: np.ndarray) -> np.ndarray:
-    x, y, z, w = (float(v) for v in quat_xyzw)
-    return np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ],
-        dtype=np.float64,
-    )
-
-
-def _normalize_quat(quat_xyzw: np.ndarray) -> np.ndarray:
-    norm = float(np.linalg.norm(quat_xyzw))
-    if norm == 0.0:
-        return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
-    return quat_xyzw / norm
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Pose:
-    """An active rigid transform: rotate by ``quat``, then translate by ``position``."""
+    """A rigid transform: a translation and a rotation.
 
-    position: np.ndarray
-    quat_xyzw: np.ndarray
+    Args:
+        position: ``(3,)`` translation in metres.
+        quat_xyzw: ``(4,)`` quaternion in ``(x, y, z, w)`` order.  Normalised on
+            construction; all zeros means the identity.
+    """
+
+    position: NDArray[np.float64]
+    quat_xyzw: NDArray[np.float64]
+    rotation: Rotation = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "position", np.asarray(self.position, dtype=np.float64).reshape(3))
-        object.__setattr__(
-            self,
-            "quat_xyzw",
-            _normalize_quat(np.asarray(self.quat_xyzw, dtype=np.float64).reshape(4)),
+        position = np.asarray(self.position, dtype=np.float64).reshape(-1)
+        if position.size != 3:
+            raise ValueError(f"expected 3 components, got {position.size}")
+        rotation = _rotation(self.quat_xyzw)
+        object.__setattr__(self, "position", position)
+        object.__setattr__(self, "rotation", rotation)
+        object.__setattr__(self, "quat_xyzw", rotation.as_quat())
+
+    # ------------------------------------------------------------------
+    # Constructors
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_rotation(cls, position: ArrayLike, rotation: Rotation) -> "Pose":
+        """Return the pose translating by *position* and rotating by *rotation*."""
+        return cls(np.asarray(position, dtype=np.float64), rotation.as_quat())
+
+    @classmethod
+    def identity(cls) -> "Pose":
+        """Return the identity transform."""
+        return cls(np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
+
+    @classmethod
+    def from_xyz_yaw(cls, x: float, y: float, z: float, yaw: float) -> "Pose":
+        """Return a pose with a yaw-only rotation (radians, counter-clockwise)."""
+        return cls.from_rotation([x, y, z], Rotation.from_euler("z", yaw))
+
+    @classmethod
+    def from_proto(cls, message: common_pb2.Pose) -> "Pose":
+        """Return the pose described by a protobuf message."""
+        return cls(
+            np.array([message.vec.x, message.vec.y, message.vec.z], dtype=np.float64),
+            np.array(
+                [message.quat.x, message.quat.y, message.quat.z, message.quat.w],
+                dtype=np.float64,
+            ),
         )
 
-    # -- constructors ------------------------------------------------------
-
-    @staticmethod
-    def identity() -> Pose:
-        return Pose(np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0]))
-
-    @staticmethod
-    def from_xyz_yaw(x: float, y: float, z: float, yaw: float) -> Pose:
-        return Pose(np.array([x, y, z], dtype=np.float64), yaw_to_quat_xyzw(yaw))
-
-    @staticmethod
-    def from_proto(proto: PoseProto) -> Pose:
-        return Pose(
-            np.array([proto.vec.x, proto.vec.y, proto.vec.z], dtype=np.float64),
-            # proto order is (w, x, y, z)
-            np.array([proto.quat.x, proto.quat.y, proto.quat.z, proto.quat.w], dtype=np.float64),
+    @classmethod
+    def from_axis_angle(cls, axis: int, angle_rad: float) -> "Pose":
+        """Return a rotation-only pose about principal axis ``0``, ``1`` or ``2`` (x, y, z)."""
+        return cls.from_rotation(
+            np.zeros(3), Rotation.from_euler(_AXES[axis], angle_rad)
         )
 
-    # -- accessors ---------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Derived quantities
+    # ------------------------------------------------------------------
 
     @property
-    def rotation_matrix(self) -> np.ndarray:
-        return _quat_to_matrix(self.quat_xyzw)
+    def rotation_matrix(self) -> NDArray[np.float64]:
+        """Return the ``(3, 3)`` rotation matrix for this pose."""
+        return self.rotation.as_matrix()
 
     @property
     def yaw(self) -> float:
-        return quat_to_yaw(self.quat_xyzw)
+        """Return the rotation about the z axis in radians."""
+        return float(self.rotation.as_euler("ZYX")[0])
 
-    def as_matrix(self) -> np.ndarray:
-        matrix = np.eye(4, dtype=np.float64)
+    def as_matrix(self) -> NDArray[np.float64]:
+        """Return the ``(4, 4)`` homogeneous transform for this pose."""
+        matrix = np.eye(4)
         matrix[:3, :3] = self.rotation_matrix
         matrix[:3, 3] = self.position
         return matrix
 
-    # -- algebra -----------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Algebra
+    # ------------------------------------------------------------------
 
-    def __matmul__(self, other: Pose) -> Pose:
-        """``self @ other`` composes ``a_to_b @ b_to_c -> a_to_c``.
-
-        Done in quaternion space rather than by multiplying 4x4 matrices and
-        decomposing the result back: composition is on the closed loop's hot
-        path, and the matrix round trip both costs more and loses precision.
-        """
-        return _unchecked_pose(
-            self.position + quat_rotate(self.quat_xyzw, other.position),
-            quat_mul(self.quat_xyzw, other.quat_xyzw),
+    def __matmul__(self, other: "Pose") -> "Pose":
+        """Compose two transforms: ``self`` applied after *other*."""
+        return Pose.from_rotation(
+            self.rotation.apply(other.position) + self.position,
+            self.rotation * other.rotation,
         )
 
-    def inverse(self) -> Pose:
-        conjugate = quat_conjugate(self.quat_xyzw)
-        return _unchecked_pose(-quat_rotate(conjugate, self.position), conjugate)
+    def inverse(self) -> "Pose":
+        """Return the inverse transform."""
+        inverse = self.rotation.inv()
+        return Pose.from_rotation(-inverse.apply(self.position), inverse)
 
-    def transform_points(self, points: np.ndarray) -> np.ndarray:
-        """Apply this pose to an ``(N, 3)`` array of points."""
-        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-        return points @ self.rotation_matrix.T + self.position
+    def transform_points(self, points: ArrayLike) -> NDArray[np.float64]:
+        """Apply this transform to an ``(N, 3)`` array of points."""
+        array = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        if array.size == 0:
+            return array
+        return self.rotation.apply(array) + self.position
 
-    # -- proto -------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
 
-    def to_proto(self) -> PoseProto:
-        x, y, z, w = (float(v) for v in self.quat_xyzw)
-        return PoseProto(
-            vec=Vec3(
-                x=float(self.position[0]),
-                y=float(self.position[1]),
-                z=float(self.position[2]),
+    def to_proto(self) -> common_pb2.Pose:
+        """Return the protobuf representation of this pose."""
+        x, y, z, w = self.quat_xyzw
+        return common_pb2.Pose(
+            vec=common_pb2.Vec3(
+                x=self.position[0], y=self.position[1], z=self.position[2]
             ),
-            quat=Quat(w=w, x=x, y=y, z=z),
+            quat=common_pb2.Quat(w=w, x=x, y=y, z=z),
         )
 
-    def to_proto_at_time(self, timestamp_us: int) -> PoseAtTime:
-        return PoseAtTime(pose=self.to_proto(), timestamp_us=int(timestamp_us))
+    def to_proto_at_time(self, timestamp_us: int) -> common_pb2.PoseAtTime:
+        """Return this pose stamped with *timestamp_us*."""
+        return common_pb2.PoseAtTime(pose=self.to_proto(), timestamp_us=timestamp_us)
 
 
 @dataclass
 class Trajectory:
-    """Time-ordered poses sharing one frame.
+    """A time-ordered sequence of poses.
 
-    Timestamps are microseconds and must be strictly increasing, matching what
-    the alpasim runtime sends and expects back.
+    Args:
+        timestamps_us: Microsecond timestamps, one per pose.
+        poses: Poses, all expressed in the same frame.
+
+    Raises:
+        ValueError: If the two sequences differ in length.
     """
 
-    timestamps_us: list[int]
-    poses: list[Pose]
+    timestamps_us: List[int]
+    poses: List[Pose]
 
     def __post_init__(self) -> None:
         if len(self.timestamps_us) != len(self.poses):
             raise ValueError(
-                f"timestamps and poses must match in length, got "
+                "timestamps_us and poses must have the same length, got "
                 f"{len(self.timestamps_us)} and {len(self.poses)}"
             )
+
+    # ------------------------------------------------------------------
+    # Constructors
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def empty(cls) -> "Trajectory":
+        """Return a trajectory with no poses."""
+        return cls([], [])
+
+    @classmethod
+    def from_proto(cls, message: common_pb2.Trajectory) -> "Trajectory":
+        """Return the trajectory described by a protobuf message."""
+        timestamps = [int(entry.timestamp_us) for entry in message.poses]
+        poses = [Pose.from_proto(entry.pose) for entry in message.poses]
+        return cls(timestamps, poses)
+
+    # ------------------------------------------------------------------
+    # Access
+    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
         return len(self.poses)
@@ -271,110 +235,88 @@ class Trajectory:
     def __bool__(self) -> bool:
         return bool(self.poses)
 
-    @staticmethod
-    def empty() -> Trajectory:
-        return Trajectory([], [])
-
-    @staticmethod
-    def from_proto(proto: TrajectoryProto) -> Trajectory:
-        return Trajectory(
-            [int(p.timestamp_us) for p in proto.poses],
-            [Pose.from_proto(p.pose) for p in proto.poses],
-        )
-
-    def to_proto(self) -> TrajectoryProto:
-        return TrajectoryProto(
-            poses=[
-                pose.to_proto_at_time(ts)
-                for ts, pose in zip(self.timestamps_us, self.poses, strict=True)
-            ]
-        )
+    @property
+    def positions(self) -> NDArray[np.float64]:
+        """Return the positions as an ``(N, 3)`` array."""
+        if not self.poses:
+            return np.zeros((0, 3))
+        return np.stack([pose.position for pose in self.poses])
 
     @property
-    def positions(self) -> np.ndarray:
-        """``(N, 3)`` array of positions; ``(0, 3)`` when empty."""
-        if not self.poses:
-            return np.zeros((0, 3), dtype=np.float64)
-        return np.stack([p.position for p in self.poses])
+    def last_pose(self) -> Optional[Pose]:
+        """Return the final pose, or ``None`` when the trajectory is empty."""
+        return self.poses[-1] if self.poses else None
 
-    @property
-    def last_pose(self) -> Pose:
-        if not self.poses:
-            raise ValueError("empty trajectory has no last pose")
-        return self.poses[-1]
+    # ------------------------------------------------------------------
+    # Mutation and transforms
+    # ------------------------------------------------------------------
 
     def append(self, timestamp_us: int, pose: Pose) -> None:
-        if self.timestamps_us and timestamp_us <= self.timestamps_us[-1]:
-            raise ValueError(
-                f"timestamps must strictly increase, got {timestamp_us} after "
-                f"{self.timestamps_us[-1]}"
-            )
+        """Append *pose* stamped at *timestamp_us*."""
         self.timestamps_us.append(int(timestamp_us))
         self.poses.append(pose)
 
-    def transform(self, delta: Pose) -> Trajectory:
-        """Left-multiply every pose: ``delta @ pose``.
+    def transform(self, delta: Pose) -> "Trajectory":
+        """Return a copy with *delta* applied to every pose.
 
-        Used the way alpasim uses it -- to re-express a trajectory given in
-        frame ``B`` into frame ``A``, pass ``pose_a_to_b``.
+        ``trajectory.transform(ego_pose)`` lifts a rig-frame trajectory into the local
+        frame; ``trajectory.transform(ego_pose.inverse())`` does the reverse.
         """
-        return Trajectory(list(self.timestamps_us), [delta @ pose for pose in self.poses])
+        return Trajectory(
+            list(self.timestamps_us), [delta @ pose for pose in self.poses]
+        )
 
-    def interpolate(self, timestamp_us: int) -> Pose:
-        """Pose at ``timestamp_us``; linear in position, slerp in rotation.
+    def interpolate(self, timestamp_us: int) -> Optional[Pose]:
+        """Return the pose at *timestamp_us*, interpolating between samples.
 
-        Clamps to the endpoints outside the covered range, which is what the
-        controller wants when the driver's plan is shorter than the step.
+        Positions are interpolated linearly and rotations by slerp.  Timestamps
+        outside the trajectory's span clamp to the nearest endpoint.
+
+        Returns:
+            The interpolated pose, or ``None`` when the trajectory is empty.
         """
         if not self.poses:
-            raise ValueError("cannot interpolate an empty trajectory")
-        if timestamp_us <= self.timestamps_us[0]:
+            return None
+        if len(self.poses) == 1 or timestamp_us <= self.timestamps_us[0]:
             return self.poses[0]
         if timestamp_us >= self.timestamps_us[-1]:
             return self.poses[-1]
 
-        idx = int(np.searchsorted(np.asarray(self.timestamps_us), timestamp_us))
-        t0, t1 = self.timestamps_us[idx - 1], self.timestamps_us[idx]
-        p0, p1 = self.poses[idx - 1], self.poses[idx]
-        alpha = (timestamp_us - t0) / (t1 - t0)
-        return Pose(
-            (1.0 - alpha) * p0.position + alpha * p1.position,
-            _slerp(p0.quat_xyzw, p1.quat_xyzw, alpha),
+        index = int(np.searchsorted(self.timestamps_us, timestamp_us))
+        previous, following = self.poses[index - 1], self.poses[index]
+        start, end = self.timestamps_us[index - 1], self.timestamps_us[index]
+        if end <= start:
+            return following
+        alpha = (timestamp_us - start) / (end - start)
+        slerp = Slerp(
+            [0.0, 1.0], Rotation.concatenate([previous.rotation, following.rotation])
+        )
+        return Pose.from_rotation(
+            previous.position + alpha * (following.position - previous.position),
+            slerp([alpha])[0],
+        )
+
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
+
+    def to_proto(self) -> common_pb2.Trajectory:
+        """Return the protobuf representation of this trajectory."""
+        return common_pb2.Trajectory(
+            poses=[
+                pose.to_proto_at_time(timestamp)
+                for timestamp, pose in zip(self.timestamps_us, self.poses)
+            ]
         )
 
 
-def _slerp(q0: np.ndarray, q1: np.ndarray, alpha: float) -> np.ndarray:
-    q0 = _normalize_quat(q0)
-    q1 = _normalize_quat(q1)
-    dot = float(np.dot(q0, q1))
-    if dot < 0.0:  # take the short way round
-        q1 = -q1
-        dot = -dot
-    if dot > 0.9995:  # nearly parallel: lerp is accurate and avoids div-by-zero
-        return _normalize_quat(q0 + alpha * (q1 - q0))
-    theta_0 = math.acos(dot)
-    theta = theta_0 * alpha
-    q_perp = _normalize_quat(q1 - q0 * dot)
-    return q0 * math.cos(theta) + q_perp * math.sin(theta)
+def waypoints_to_proto(points: NDArray[np.float64]) -> List[common_pb2.Vec3]:
+    """Return *points* as protobuf ``Vec3`` messages.
 
-
-def dynamic_state_proto(
-    linear_velocity: np.ndarray,
-    angular_velocity: np.ndarray,
-    linear_acceleration: np.ndarray,
-    angular_acceleration: np.ndarray | None = None,
-) -> DynamicState:
-    """Build a :class:`DynamicState`; all vectors resolved in the rig frame."""
-    zero = np.zeros(3, dtype=np.float64)
-    ang_acc = zero if angular_acceleration is None else angular_acceleration
-
-    def vec(values: np.ndarray) -> Vec3:
-        arr = np.asarray(values, dtype=np.float64).reshape(3)
-        return Vec3(x=float(arr[0]), y=float(arr[1]), z=float(arr[2]))
-
-    return DynamicState(
-        linear_velocity=vec(linear_velocity),
-        angular_velocity=vec(angular_velocity),
-        linear_acceleration=vec(linear_acceleration),
-        angular_acceleration=vec(ang_acc),
-    )
+    Args:
+        points: ``(N, 3)`` array of waypoints.
+    """
+    return [
+        common_pb2.Vec3(x=float(point[0]), y=float(point[1]), z=float(point[2]))
+        for point in points
+    ]

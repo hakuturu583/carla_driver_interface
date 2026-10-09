@@ -80,6 +80,64 @@ message CarlaRendererData {
   // Posted speed limit for the ego lane, in m/s. 0 when unknown.
   float speed_limit_mps = 7;
   repeated CarlaActorState actors = 8;
+  // Field 9 carried per-step lane geometry in carla_driver_interface; the map
+  // ships as a file instead (see `map_id`).
+  reserved 9;
+  reserved "lanes";
+  // One sweep per configured LiDAR, in the rig frame, except on a step whose
+  // sweep did not arrive in time. Empty unless the runtime mounts one
+  // (`driver.lidars`). Carried here because the egodriver contract has no
+  // LiDAR submission RPC.
+  repeated LidarSweep lidar = 10;
+  // Which map file set describes this world: the runtime writes the map once,
+  // at scenario start, to `<map_dir>/<map_id>/` (`driver.map_dir`), and a
+  // driver reads it from its own copy of that directory -- the way alpasim's
+  // services read a scene's map from its artifact rather than off the wire.
+  // `<map name>-<first 12 hex digits of the OpenDRIVE's SHA-256>`, so a changed
+  // map gets a new id. Empty when the runtime writes no map.
+  string map_id = 11;
+  // Every traffic light in the world and where to stop for it -- the map's one
+  // dynamic layer. Empty unless the runtime writes a map (`map_id`), which is
+  // what a driver resolves these against.
+  repeated TrafficLight traffic_lights = 12;
+}
+
+// One traffic light and its state at `CarlaRendererData.snapshot_timestamp_us`.
+message TrafficLight {
+  // The light's OpenDRIVE signal id, which the map file set traces to its own
+  // elements (a Lanelet2 traffic-light regulatory element, for instance).
+  string opendrive_id = 1;
+  TrafficLightState state = 2;
+  // Where traffic stops for this light: one point per lane it governs.
+  repeated StopPoint stop_points = 3;
+}
+
+// A stop position on one OpenDRIVE lane.
+message StopPoint {
+  int32 road_id = 1;
+  // Index of the lane section within the road, from 0.
+  int32 section_id = 2;
+  // OpenDRIVE lane id: negative on the right of the reference line, positive
+  // on the left.
+  int32 lane_id = 3;
+  // The point on the lane's centre line, in the `local` frame -- the frame of
+  // the map file and of egomotion, the OpenDRIVE frame itself.
+  common.Vec3 position_local = 4;
+}
+
+// One LiDAR sweep. Points are expressed in the rig frame (not the sensor's),
+// so a consumer never needs the mount to use them; `rig_to_lidar` is carried
+// for consumers that want the sensor origin, e.g. for ray casting.
+message LidarSweep {
+  string logical_id = 1;
+  fixed64 timestamp_us = 2;
+  common.Pose rig_to_lidar = 3;
+  uint32 num_points = 4;
+  // Little-endian float32, row-major [num_points, 4]: x, y, z in metres and
+  // intensity normalised to [0, 1]. Packed rather than `repeated Vec3` because a
+  // sweep is ~10^5 points and a message per point costs an order of magnitude
+  // in size and parse time.
+  bytes points_xyzi = 5;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

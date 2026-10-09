@@ -1,26 +1,28 @@
-# SPDX-License-Identifier: Apache-2.0
-"""alpasim-compatible egodriver module plus a CARLA closed-loop runtime.
+"""Both ends of alpasim's ``egodriver.EgodriverService`` gRPC contract, without CARLA.
 
-The driver half speaks ``egodriver.EgodriverService`` exactly as
-`NVlabs/alpasim <https://github.com/NVlabs/alpasim>`_ defines it, by inheriting
-the upstream generated servicer.  The runtime half replaces alpasim's sensorsim,
-controller, physics and traffic services with CARLA.  ``docs/COMPATIBILITY.md``
-and :mod:`carla_driver_interface.compat` enumerate where the two differ.
+A *policy* -- anything that plans a trajectory from camera frames, ego motion and a
+route -- implements :class:`~carla_driver_interface.driver.BaseDriver` and is served
+with :func:`~carla_driver_interface.server.run_server` (or
+``carla-driver-interface serve``). A *runtime* drives it: autoware_carla_scenario
+(https://github.com/autowarefoundation/autoware_carla_scenario, with
+``ego.entity=carla_driver``) against CARLA, an upstream alpasim runtime, or
+:mod:`carla_driver_interface.testing` without a simulator.
+
+The package is deliberately light -- numpy, scipy, grpcio, protobuf and Pillow -- so a
+policy depends on it without pulling in a simulator or a scenario framework, and it runs
+on Python 3.10-3.14. The wire contract is vendored from NVlabs/alpasim (see
+``proto/README.md`` in the source repository); field numbers and service names are
+unchanged, so it interoperates with upstream. The package is versioned on its own, and
+the wire contract is its compatibility unit.
 """
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
-
-#: alpasim commit that the ``alpasim-grpc`` dependency is pinned to in
-#: ``pyproject.toml``.  Kept here so the compat report can state it without
-#: parsing package metadata.
-ALPASIM_GRPC_REV = "68709245a5dc0f2eda4f8cb2c3aa8cbdfa913043"
+from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = _pkg_version("carla-driver-interface")
-except PackageNotFoundError:  # running from a source tree without an install
-    __version__ = "0.0.0+unknown"
+    __version__ = version("carla-driver-interface")
+except PackageNotFoundError:  # pragma: no cover - running from a source tree
+    __version__ = "0.0.0"
 
-__all__ = ["ALPASIM_GRPC_REV", "__version__"]
+__all__ = ["__version__"]

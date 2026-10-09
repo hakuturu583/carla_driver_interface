@@ -119,6 +119,8 @@ class SessionState:
     uuid: str
     seed: int
     scene_id: str
+    #: Declared cameras by logical id.  ``rig_to_camera`` is the camera body's pose
+    #: in the rig (x along the optical axis, y left, z up) in either mode.
     cameras: Dict[str, AvailableCamera]
 
     #: Bounded history per sensor, by logical id, oldest first; ``[]`` for every

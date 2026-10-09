@@ -84,9 +84,11 @@ for the two opaque `bytes` fields the contract leaves to each runtime:
 | --- | --- | --- |
 | `DriveRequest.renderer_data` | read as `CarlaRendererData` (`ctx.renderer_data`, `ctx.map`, LiDAR) | never parsed: it is alpasim's renderer's own payload; `ctx.renderer_data` is `None` |
 | `DriveResponse.debug_info.unstructured_debug_info` | a `CarlaDriveDebugInfo` | the pickled `dict` alpasim's evaluation unpickles (`policy_name`, `inference_seconds`, `scalars`), as alpasim's own driver answers |
+| `AvailableCamera.rig_to_camera` | the camera body's pose (x along the optical axis, y left, z up), handed over as is | the optical frame's pose (x right, y down, z along the optical axis), as alpasim's renderers declare it; rotated to the body's before the policy sees it |
 
 Everything else (sessions, frames, ego history, the rig/local conversion) is the same, and
-so is a policy: `BaseDriver` does not change. SIGTERM stops the server cleanly in either
+so is a policy: `BaseDriver` does not change, and `session.cameras` holds body poses in
+both modes. SIGTERM stops the server cleanly in either
 mode, so `docker stop` does too.
 
 **2. Build an image.**

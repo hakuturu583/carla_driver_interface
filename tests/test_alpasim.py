@@ -313,3 +313,32 @@ def test_a_pinhole_needs_a_resolution_and_a_sane_spec(tmp_path: Path) -> None:
     for bad in ("c", "c:0", "c:200", "c:50@1,2", "c:50@1,2,3,4"):
         with pytest.raises(ValueError):
             parse_pinhole(bad)
+
+
+@pytest.mark.parametrize("mode", ["carla", "alpasim"])
+def test_policies_see_camera_body_poses_in_either_mode(mode: str) -> None:
+    from scipy.spatial.transform import Rotation
+
+    pinhole = PinholeCamera("cam", 50.0, (2.9, -0.02, 2.1), (-0.1, 5.0, 10.0))
+    body = Rotation.from_euler("xyz", pinhole.rpy_deg, degrees=True)
+    declared = body if mode == "carla" else Rotation.from_quat(pinhole.rotation_xyzw())
+    request = DriveSessionRequest(session_uuid="s")
+    camera = request.rollout_spec.vehicle.available_cameras.add(logical_id="cam")
+    camera.rig_to_camera.CopyFrom(
+        Pose.from_rotation(pinhole.position_m, declared).to_proto()
+    )
+    camera.intrinsics.resolution_w = 1920
+
+    seen: Dict[str, Any] = {}
+    policy = _Records()
+    policy.on_session_start = lambda session: seen.update(session.cameras)  # type: ignore[method-assign]
+    EgodriverServicer(policy, mode).start_session(request, MagicMock())  # type: ignore[arg-type]
+
+    pose = Pose.from_proto(seen["cam"].rig_to_camera)
+    assert np.allclose(pose.position, pinhole.position_m)
+    assert (pose.rotation * body.inv()).magnitude() < 1e-6
+    assert seen["cam"].intrinsics.resolution_w == 1920
+    # The request itself is left as the runtime sent it.
+    assert Pose.from_proto(camera.rig_to_camera).rotation.approx_equal(
+        declared, atol=1e-6
+    )

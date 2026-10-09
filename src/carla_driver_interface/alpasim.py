@@ -29,9 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import numpy as np
-
 from . import __version__
+from .geometry import BODY_TO_OPTICAL
 
 __all__ = [
     "CameraOverride",
@@ -272,11 +271,6 @@ def parse_camera(text: str) -> CameraOverride:
     return camera
 
 
-#: A camera body (x forward, y left, z up) to its optical frame (x right, y down,
-#: z forward): the optical axes as columns, in body coordinates.
-_BODY_TO_OPTICAL = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
-
-
 @dataclass(frozen=True)
 class PinholeCamera:
     """An undistorted pinhole camera for alpasim's renderer to render instead.
@@ -302,7 +296,7 @@ class PinholeCamera:
         from scipy.spatial.transform import Rotation
 
         body = Rotation.from_euler("xyz", self.rpy_deg, degrees=True)
-        optical = body * Rotation.from_matrix(_BODY_TO_OPTICAL)
+        optical = body * Rotation.from_matrix(BODY_TO_OPTICAL)
         x, y, z, w = (float(v) for v in optical.as_quat())
         return (x, y, z, w)
 

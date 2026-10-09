@@ -1,0 +1,51 @@
+name: PR Label Check
+
+# Every PR says how merging it moves the version: release.yml bumps by the
+# merged PR's label (`bump patch`, `bump minor` or `bump major`) and releases.
+# Exactly one is required, so a merge can never bump ambiguously.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    branches: [main]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-version-bump-label:
+    name: Check Version Bump Label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for exactly one version bump label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Fetch the PR rather than trusting the event payload, so a
+            // re-run sees the labels as they are now.
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const labels = pr.labels.map((label) => label.name);
+            console.log(`PR labels: ${labels.join(', ')}`);
+
+            const bumps = ['bump patch', 'bump minor', 'bump major'].filter((name) =>
+              labels.includes(name),
+            );
+            if (bumps.length === 1) {
+              console.log(`Found "${bumps[0]}"`);
+              return;
+            }
+            core.setFailed(
+              (bumps.length === 0
+                ? 'PR must have one of the following labels:\n'
+                : `PR has more than one version bump label (${bumps.join(', ')}); keep exactly one of:\n`) +
+                '  - bump patch\n' +
+                '  - bump minor\n' +
+                '  - bump major\n\n' +
+                'Merging bumps the version in pyproject.toml accordingly and releases it.',
+            );

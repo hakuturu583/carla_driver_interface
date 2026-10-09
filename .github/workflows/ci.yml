@@ -5,14 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # alpasim-grpc pins requires-python to >=3.11,<3.13.
-        python-version: ["3.11", "3.12"]
+        # The whole of `requires-python`.
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -21,20 +24,25 @@ jobs:
           enable-cache: true
 
       - name: Install
-        # `carla` is deliberately not installed: the whole closed loop is
-        # exercised through the FakeWorld adapter instead.
-        run: uv sync --extra dev --python ${{ matrix.python-version }}
+        # `--locked` fails if uv.lock is stale rather than rewriting it.
+        # grpcio-tools (proto regeneration) is only installed on 3.10-3.12,
+        # so the generated-modules freshness test is skipped on 3.13+.
+        run: uv sync --locked --group dev --python ${{ matrix.python-version }}
 
       - name: Lint
         run: |
-          uv run ruff check .
-          uv run ruff format --check .
+          uv run --no-sync ruff check .
+          uv run --no-sync ruff format --check .
 
       - name: Type check
-        run: uv run mypy src
+        run: uv run --no-sync mypy src tests scripts
 
       - name: Test
-        run: uv run pytest -q
+        run: uv run --no-sync pytest -q
+
+      - name: Generated protobuf modules are current
+        if: matrix.python-version == '3.12'
+        run: uv run --no-sync python scripts/compile_protos.py --check
 
       - name: Closed-loop smoke test
         # Exercises the CLI wiring that `pytest` does not: two real processes
@@ -42,15 +50,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          uv run carla-driver-interface serve --policy route_follower --port 50251 &
+          uv run --no-sync carla-driver-interface serve --policy route_follower --port 50251 &
           server=$!
           # The runner kills leftover background processes at job teardown and
           # attributes their exit status to this step, so the server has to be
           # reaped here rather than left running.
           trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
 
-          # Poll the port rather than sleeping a fixed amount: a fixed sleep is
-          # either too short on a slow runner or wasted time on a fast one.
+          # Poll the port rather than sleeping a fixed amount.
           for _ in $(seq 60); do
             if (exec 3<>/dev/tcp/127.0.0.1/50251) 2>/dev/null; then
               break
@@ -58,7 +65,4 @@ jobs:
             sleep 0.5
           done
 
-          uv run carla-driver-interface demo --driver localhost:50251 --steps 200
-
-      - name: Compatibility report
-        run: uv run carla-driver-interface compat-report
+          uv run --no-sync carla-driver-interface demo --driver localhost:50251 --steps 200

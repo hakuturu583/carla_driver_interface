@@ -21,6 +21,7 @@ from .alpasim import (
     build_image,
     default_context_dir,
     parse_camera,
+    parse_pinhole,
     parse_policy_args,
     write_build_context,
     write_wizard_config,
@@ -165,6 +166,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="ID[:WxH][@HZ]",
         help="replace alpasim's cameras with these (repeatable)",
     )
+    wizard.add_argument(
+        "--pinhole",
+        action="append",
+        default=[],
+        metavar="ID:HFOV[@X,Y,Z[,ROLL,PITCH,YAW]]",
+        help="render camera ID through an undistorted pinhole model of HFOV degrees, "
+        "mounted at X,Y,Z m in the rig frame, rotated ROLL,PITCH,YAW degrees "
+        "(repeatable; give its resolution with --camera)",
+    )
     wizard.add_argument("--max-workers", type=int, default=8)
 
     args = parser.parse_args(argv)
@@ -256,6 +266,7 @@ def _wizard_config(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         environment[key] = value
     try:
         cameras = [parse_camera(c) for c in args.camera]
+        pinholes = [parse_pinhole(p) for p in args.pinhole]
     except ValueError as exc:
         parser.error(str(exc))
     config = WizardDriverConfig(
@@ -266,6 +277,7 @@ def _wizard_config(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
         volumes=args.volume,
         environment=environment,
         cameras=cameras,
+        pinholes=pinholes,
         max_workers=args.max_workers,
     )
     try:

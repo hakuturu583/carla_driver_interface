@@ -19,6 +19,7 @@ Dockerfile and built by the ``docker`` CLI, and the config is plain YAML text.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -26,7 +27,9 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+
+import numpy as np
 
 from . import __version__
 
@@ -37,9 +40,11 @@ __all__ = [
     "ImageSpec",
     "POLICY_ARGS_ENV",
     "POLICY_ENV",
+    "PinholeCamera",
     "WizardDriverConfig",
     "build_image",
     "parse_camera",
+    "parse_pinhole",
     "parse_policy_args",
     "render_dockerfile",
     "write_build_context",
@@ -267,6 +272,91 @@ def parse_camera(text: str) -> CameraOverride:
     return camera
 
 
+#: A camera body (x forward, y left, z up) to its optical frame (x right, y down,
+#: z forward): the optical axes as columns, in body coordinates.
+_BODY_TO_OPTICAL = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+
+
+@dataclass(frozen=True)
+class PinholeCamera:
+    """An undistorted pinhole camera for alpasim's renderer to render instead.
+
+    alpasim's ``runtime.extra_cameras`` redefines a camera the renderer has; with
+    NRE the logical id must be one of the scene's own cameras
+    (``camera_front_wide_120fov``, ...), whose images it then renders through
+    this model and mount instead. The recorded vehicle's hood mask, drawn for the
+    recorded cameras, is turned off.
+    """
+
+    logical_id: str
+    #: Horizontal field of view [deg]; square pixels, principal point centred.
+    hfov_deg: float
+    #: Mount in the rig frame (x forward, y left, z up, origin on the ground below
+    #: the rear axle) [m], and the camera body's roll, pitch, yaw about it [deg]
+    #: (z-y-x, right-handed: positive pitch looks down, positive yaw looks left).
+    position_m: Tuple[float, float, float] = (1.5, 0.0, 1.5)
+    rpy_deg: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def rotation_xyzw(self) -> Tuple[float, float, float, float]:
+        """``rig_to_camera``'s rotation: the optical frame in the rig frame."""
+        from scipy.spatial.transform import Rotation
+
+        body = Rotation.from_euler("xyz", self.rpy_deg, degrees=True)
+        optical = body * Rotation.from_matrix(_BODY_TO_OPTICAL)
+        x, y, z, w = (float(v) for v in optical.as_quat())
+        return (x, y, z, w)
+
+    def extra_camera(self, width: int, height: int) -> Dict[str, Any]:
+        """The ``runtime.extra_cameras`` entry at *width* x *height* pixels."""
+        focal = (width / 2.0) / math.tan(math.radians(self.hfov_deg) / 2.0)
+        return {
+            "logical_id": self.logical_id,
+            "rig_to_camera": {
+                "translation_m": list(self.position_m),
+                "rotation_xyzw": list(self.rotation_xyzw()),
+            },
+            "intrinsics": {
+                "model": "opencv_pinhole",
+                "opencv_pinhole": {
+                    "focal_length": [focal, focal],
+                    "principal_point": [width / 2.0, height / 2.0],
+                    "radial": [0.0] * 6,
+                    "tangential": [0.0] * 2,
+                    "thin_prism": [0.0] * 4,
+                },
+            },
+            "resolution_hw": [height, width],
+            "shutter_type": "GLOBAL",
+        }
+
+
+_PINHOLE = re.compile(r"^(?P<id>[^:]+):(?P<hfov>[\d.]+)(?:@(?P<mount>[-\d.,]+))?$")
+
+
+def parse_pinhole(text: str) -> PinholeCamera:
+    """``logical_id:HFOV[@X,Y,Z[,ROLL,PITCH,YAW]]`` (m, deg; see :class:`PinholeCamera`)."""
+    match = _PINHOLE.match(text)
+    if match is None:
+        raise ValueError(
+            f"pinhole camera {text!r} is not logical_id:HFOV[@X,Y,Z[,ROLL,PITCH,YAW]]"
+        )
+    hfov = float(match["hfov"])
+    if not 0.0 < hfov < 180.0:
+        raise ValueError(f"pinhole camera {text!r}: HFOV must be in (0, 180) degrees")
+    camera = PinholeCamera(match["id"], hfov)
+    if match["mount"]:
+        values = [float(v) for v in match["mount"].split(",")]
+        if len(values) not in (3, 6):
+            raise ValueError(
+                f"pinhole camera {text!r}: mount is X,Y,Z[,ROLL,PITCH,YAW]"
+            )
+        rpy = (values[3], values[4], values[5]) if len(values) == 6 else (0.0, 0.0, 0.0)
+        camera = PinholeCamera(
+            camera.logical_id, hfov, (values[0], values[1], values[2]), rpy
+        )
+    return camera
+
+
 @dataclass
 class WizardDriverConfig:
     """``driver=<name>`` for alpasim's wizard, running an image from :func:`build_image`."""
@@ -282,6 +372,9 @@ class WizardDriverConfig:
     environment: Dict[str, str] = field(default_factory=dict)
     #: Replace the runtime's cameras; empty keeps alpasim's defaults.
     cameras: List[CameraOverride] = field(default_factory=list)
+    #: Render these of the cameras through a pinhole model and mount of their own
+    #: (``runtime.extra_cameras``), at their resolution in :attr:`cameras`.
+    pinholes: List[PinholeCamera] = field(default_factory=list)
     #: ``pull_policy`` for the image: ``missing`` uses a local build as is.
     pull_policy: str = "missing"
     max_workers: int = 8
@@ -328,12 +421,26 @@ class WizardDriverConfig:
             "replicas_per_container": 1,
         }
         services: Dict[str, Any] = {"services": {"driver": service}}
+        runtime: Dict[str, Any] = {}
         if self.cameras:
-            services["runtime"] = {
-                "simulation_config": {
-                    "cameras": [vars(camera) for camera in self.cameras]
-                }
+            runtime["simulation_config"] = {
+                "cameras": [vars(camera) for camera in self.cameras]
             }
+        if self.pinholes:
+            sizes = {c.logical_id: (c.width, c.height) for c in self.cameras}
+            missing = [p.logical_id for p in self.pinholes if p.logical_id not in sizes]
+            if missing:
+                raise ValueError(
+                    f"pinhole cameras {missing} need a resolution: name them in cameras"
+                )
+            runtime["extra_cameras"] = [
+                p.extra_camera(*sizes[p.logical_id]) for p in self.pinholes
+            ]
+            # NRE's ego masks (the recorded vehicle's hood, per camera) are drawn
+            # for the recorded cameras, not for a camera redefined here.
+            runtime.setdefault("simulation_config", {})["ego_mask_rig_config_id"] = None
+        if runtime:
+            services["runtime"] = runtime
         return {
             f"driver/{self.name}.yaml": header
             + _yaml({"defaults": [f"{self.name}_service", "_self_"]})

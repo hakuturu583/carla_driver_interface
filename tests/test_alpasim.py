@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import yaml
 
@@ -17,8 +19,10 @@ from carla_driver_interface.alpasim import (
     POLICY_ENV,
     CameraOverride,
     ImageSpec,
+    PinholeCamera,
     WizardDriverConfig,
     parse_camera,
+    parse_pinhole,
     parse_policy_args,
     write_build_context,
     write_wizard_config,
@@ -250,3 +254,62 @@ def test_serve_takes_the_images_policy_and_its_arguments(
     # ...and another policy does not inherit them.
     cli.main(["serve", "--policy", "route_follower"])
     assert served["policy"].name == "route_follower"
+
+
+# -- pinhole cameras -------------------------------------------------------------
+
+
+def test_a_forward_pinhole_looks_down_the_rigs_x_axis() -> None:
+    from scipy.spatial.transform import Rotation
+
+    camera = PinholeCamera("cam", 50.0)
+    optical = Rotation.from_quat(camera.rotation_xyzw()).as_matrix()
+    # Optical z (forward) is the rig's x, optical x (right) its -y, y (down) its -z.
+    np.testing.assert_allclose(optical[:, 2], [1, 0, 0], atol=1e-12)
+    np.testing.assert_allclose(optical[:, 0], [0, -1, 0], atol=1e-12)
+    np.testing.assert_allclose(optical[:, 1], [0, 0, -1], atol=1e-12)
+    # Positive pitch looks down, positive yaw left.
+    down = Rotation.from_quat(
+        PinholeCamera("c", 50, rpy_deg=(0, 10, 0)).rotation_xyzw()
+    )
+    assert down.as_matrix()[2, 2] < 0
+    left = Rotation.from_quat(
+        PinholeCamera("c", 50, rpy_deg=(0, 0, 10)).rotation_xyzw()
+    )
+    assert left.as_matrix()[1, 2] > 0
+
+
+def test_a_pinhole_is_rendered_at_its_cameras_resolution(tmp_path: Path) -> None:
+    pinhole = parse_pinhole("camera_front_wide_120fov:50@2.97,-0.02,2.12,0,0.11,0.23")
+    assert pinhole.position_m == (2.97, -0.02, 2.12)
+    assert pinhole.rpy_deg == (0.0, 0.11, 0.23)
+    config = WizardDriverConfig(
+        name="d",
+        image="i",
+        cameras=[parse_camera("camera_front_wide_120fov:1920x1280@10")],
+        pinholes=[pinhole],
+    )
+    write_wizard_config(config, tmp_path)
+    runtime = yaml.safe_load((tmp_path / "driver" / "d_service.yaml").read_text())[
+        "runtime"
+    ]
+    (extra,) = runtime["extra_cameras"]
+    assert extra["resolution_hw"] == [1280, 1920]
+    assert extra["intrinsics"]["model"] == "opencv_pinhole"
+    fx, fy = extra["intrinsics"]["opencv_pinhole"]["focal_length"]
+    assert fx == fy == pytest.approx(960 / math.tan(math.radians(25)))
+    assert extra["intrinsics"]["opencv_pinhole"]["principal_point"] == [960, 640]
+    assert extra["rig_to_camera"]["translation_m"] == [2.97, -0.02, 2.12]
+    assert extra["shutter_type"] == "GLOBAL"
+    # The recorded vehicle's hood does not belong in a redefined camera.
+    assert runtime["simulation_config"]["ego_mask_rig_config_id"] is None
+
+
+def test_a_pinhole_needs_a_resolution_and_a_sane_spec(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="resolution"):
+        WizardDriverConfig(
+            name="d", image="i", pinholes=[PinholeCamera("c", 50)]
+        ).files()
+    for bad in ("c", "c:0", "c:200", "c:50@1,2", "c:50@1,2,3,4"):
+        with pytest.raises(ValueError):
+            parse_pinhole(bad)

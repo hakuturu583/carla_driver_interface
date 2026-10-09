@@ -122,8 +122,24 @@ image as alpasim's driver service (`services.driver`, an external image), starte
 `serve --mode alpasim` on the port the wizard assigns, logging to
 `<log_dir>/driver/`. `--policy` and `--policy-arg` override the image's defaults,
 `--volume` and `--env` add mounts (weights, say) and variables, and `--camera
-ID[:WxH][@HZ]` replaces alpasim's default cameras. Everything else -- renderer, physics,
-controller, scenes, evaluation -- is alpasim's, unchanged.
+ID[:WxH][@HZ]` replaces alpasim's default cameras. `--pinhole ID:HFOV[@X,Y,Z[,ROLL,PITCH,YAW]]`
+has the renderer render camera `ID` through an undistorted pinhole model instead
+(`runtime.extra_cameras`), mounted in the rig frame (x forward, y left, z up, from the
+ground below the rear axle; m and degrees) and at its `--camera` resolution; the recorded
+vehicle's hood mask is then turned off. With NRE, `ID` must be one of the scene's cameras.
+Everything else -- renderer, physics, controller, scenes, evaluation -- is alpasim's,
+unchanged.
+
+For example, VisionPilot (`vision_pilot.driver.VisionPilotDriver`) on its own camera, a
+1920x1280, 50 degree pinhole at 10 Hz:
+
+```console
+$ carla-driver-interface alpasim wizard-config --name vision_pilot \
+      --image vision-pilot-alpasim:0.1 --out ./alpasim-conf \
+      --volume /path/to/weights:/mnt/weights:ro \
+      --camera camera_front_wide_120fov:1920x1280@10 \
+      --pinhole camera_front_wide_120fov:50@2.969,-0.0243,2.116,-0.10,0.11,0.23
+```
 
 ## Successor to carla-driver-interface 0.1.0
 

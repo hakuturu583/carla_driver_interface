@@ -66,3 +66,25 @@ jobs:
           done
 
           uv run --no-sync carla-driver-interface demo --driver localhost:50251 --steps 200
+
+      - name: Driver image smoke test
+        # `alpasim build-image` from this checkout, then the fake loop against the
+        # container, in alpasim mode as the image serves by default.
+        if: matrix.python-version == '3.12'
+        run: |
+          set -euo pipefail
+
+          uv run --no-sync carla-driver-interface alpasim build-image \
+            --tag carla-driver-interface-driver:ci --carla-driver-interface . \
+            --context-dir "$RUNNER_TEMP/driver-image"
+          docker run -d --rm --name driver -p 50252:50051 carla-driver-interface-driver:ci
+          trap 'docker logs driver || true; docker stop driver >/dev/null 2>&1 || true' EXIT
+
+          for _ in $(seq 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/50252) 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
+
+          uv run --no-sync carla-driver-interface demo --driver localhost:50252 --steps 100

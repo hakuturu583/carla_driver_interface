@@ -47,6 +47,9 @@ dev = [
     "pytest>=8",
     "ruff>=0.7",
     "mypy>=1.11",
+    # Reads back the wizard config `alpasim wizard-config` writes.
+    "pyyaml>=6",
+    "types-pyyaml",
 ]
 
 [tool.ruff]

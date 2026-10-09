@@ -14,7 +14,9 @@ Both ends of [NVlabs/alpasim](https://github.com/NVlabs/alpasim)'s
 The CARLA runtime lives in
 [autoware_carla_scenario](https://github.com/autowarefoundation/autoware_carla_scenario):
 with `ego.entity=carla_driver` it drives the same policy server inside a scenario. An
-upstream alpasim runtime drives it too — nothing about the alpasim wire format is changed.
+upstream alpasim runtime drives it too — nothing about the alpasim wire format is changed,
+and `carla-driver-interface alpasim` packages a policy as alpasim's driver service
+([Running a policy in alpasim](#running-a-policy-in-alpasim)).
 
 ## Install
 
@@ -69,6 +71,75 @@ or, in a test, `FakeLoop("localhost:50051", [FakeCamera()])` from
 `carla_driver_interface.testing` (a context manager; `.run(steps)` returns a
 `LoopResult`). The ego follows the returned plan exactly, so what is tested is the policy
 and the wire, not a controller.
+
+## Running a policy in alpasim
+
+alpasim runs its driver as a container its wizard starts, and its runtime drives it over
+the same `egodriver.EgodriverService`. Three commands take a policy there.
+
+**1. Serve in alpasim mode.** `serve --mode alpasim` serves the policy as before, except
+for the two opaque `bytes` fields the contract leaves to each runtime:
+
+| | `--mode carla` (default) | `--mode alpasim` |
+| --- | --- | --- |
+| `DriveRequest.renderer_data` | read as `CarlaRendererData` (`ctx.renderer_data`, `ctx.map`, LiDAR) | never parsed: it is alpasim's renderer's own payload; `ctx.renderer_data` is `None` |
+| `DriveResponse.debug_info.unstructured_debug_info` | a `CarlaDriveDebugInfo` | the pickled `dict` alpasim's evaluation unpickles (`policy_name`, `inference_seconds`, `scalars`), as alpasim's own driver answers |
+
+Everything else (sessions, frames, ego history, the rig/local conversion) is the same, and
+so is a policy: `BaseDriver` does not change. SIGTERM stops the server cleanly in either
+mode, so `docker stop` does too.
+
+**2. Build an image.**
+
+```console
+$ carla-driver-interface alpasim build-image --tag my-policy:0.1 \
+      --install ./my_policy --policy my_policy.driver:MyPolicy \
+      --policy-arg cruise_speed_mps=8
+```
+
+installs carla-driver-interface (this version from PyPI, or `--carla-driver-interface
+PATH` for a checkout) and every `--install` requirement (a name, a URL, or a local
+project directory or wheel, copied into the build context) with one `pip install` on
+`--base-image` (default `python:3.12-slim`; any image with `python`, `pip` and `bash`).
+The policy and its `--policy-arg`s are baked in as the image's defaults
+(`CARLA_DRIVER_INTERFACE_POLICY`, `CARLA_DRIVER_INTERFACE_POLICY_ARGS`), its module is
+imported at build time (`--no-check-policy` to skip), and the image serves alpasim mode on
+port 50051 when run by itself. `--apt` adds Debian packages, `--no-build` writes the
+context and its `Dockerfile` without building, and `--docker-arg` passes arguments to
+`docker build`.
+
+**3. Hand it to alpasim's wizard.**
+
+```console
+$ carla-driver-interface alpasim wizard-config --image my-policy:0.1 --out ./alpasim-conf
+$ cd alpasim && uv run alpasim_wizard deploy=local topology=1gpu \
+      driver=carla_driver_interface 'hydra.searchpath=[file:///abs/path/to/alpasim-conf]' \
+      wizard.log_dir=$PWD/run
+```
+
+writes the config group `driver=carla_driver_interface` (`--name` to change it): the
+image as alpasim's driver service (`services.driver`, an external image), started with
+`serve --mode alpasim` on the port the wizard assigns, logging to
+`<log_dir>/driver/`. `--policy` and `--policy-arg` override the image's defaults,
+`--volume` and `--env` add mounts (weights, say) and variables, and `--camera
+ID[:WxH][@HZ]` replaces alpasim's default cameras. `--pinhole ID:HFOV[@X,Y,Z[,ROLL,PITCH,YAW]]`
+has the renderer render camera `ID` through an undistorted pinhole model instead
+(`runtime.extra_cameras`), mounted in the rig frame (x forward, y left, z up, from the
+ground below the rear axle; m and degrees) and at its `--camera` resolution; the recorded
+vehicle's hood mask is then turned off. With NRE, `ID` must be one of the scene's cameras.
+Everything else -- renderer, physics, controller, scenes, evaluation -- is alpasim's,
+unchanged.
+
+For example, VisionPilot (`vision_pilot.driver.VisionPilotDriver`) on its own camera, a
+1920x1280, 50 degree pinhole at 10 Hz:
+
+```console
+$ carla-driver-interface alpasim wizard-config --name vision_pilot \
+      --image vision-pilot-alpasim:0.1 --out ./alpasim-conf \
+      --volume /path/to/weights:/mnt/weights:ro \
+      --camera camera_front_wide_120fov:1920x1280@10 \
+      --pinhole camera_front_wide_120fov:50@2.969,-0.0243,2.116,-0.10,0.11,0.23
+```
 
 ## Successor to carla-driver-interface 0.1.0
 

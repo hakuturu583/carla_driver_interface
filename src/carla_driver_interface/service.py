@@ -5,14 +5,27 @@ alpasim proto rather than redeclaring the service, so RPC names, message types a
 wire format cannot drift from upstream. It owns the plumbing -- session lifecycle,
 frame retention, ego history, rig/local conversion, the CARLA payloads -- and the
 policy sees only :mod:`carla_driver_interface.driver`.
+
+It serves in one of two modes (:data:`ServiceMode`), which differ only in the two
+opaque ``bytes`` fields the contract leaves to each runtime:
+
+* ``"carla"`` (the default): ``DriveRequest.renderer_data`` carries
+  ``CarlaRendererData`` and the response's ``unstructured_debug_info`` a
+  ``CarlaDriveDebugInfo``, as autoware_carla_scenario reads and writes them;
+* ``"alpasim"``: under an upstream alpasim runtime, ``renderer_data`` is the
+  renderer's own payload, so it is never parsed as CARLA ground truth, and
+  ``unstructured_debug_info`` is the pickled ``dict`` alpasim's evaluation unpickles
+  (``policy_name``, ``inference_seconds``, ``scalars``), as alpasim's own driver
+  answers.
 """
 
 from __future__ import annotations
 
 import logging
+import pickle
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Literal, Optional, get_args
 
 import grpc
 import numpy as np
@@ -52,14 +65,21 @@ from .protocol import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["EgodriverServicer"]
+__all__ = ["EgodriverServicer", "SERVICE_MODES", "ServiceMode"]
+
+#: What the runtime on the other end puts in the contract's opaque fields.
+ServiceMode = Literal["carla", "alpasim"]
+SERVICE_MODES: tuple = get_args(ServiceMode)
 
 
 class EgodriverServicer(EgodriverServiceServicer):
     """Serves one :class:`BaseDriver` over the alpasim egodriver contract."""
 
-    def __init__(self, driver: BaseDriver) -> None:
+    def __init__(self, driver: BaseDriver, mode: ServiceMode = "carla") -> None:
+        if mode not in SERVICE_MODES:
+            raise ValueError(f"unknown mode {mode!r}: expected one of {SERVICE_MODES}")
         self._driver = driver
+        self._mode = mode
         self._sessions: Dict[str, SessionState] = {}
         self._sessions_lock = threading.Lock()
         #: Opened map sets by ``map_id``; a map does not change under its id.
@@ -215,7 +235,13 @@ class EgodriverServicer(EgodriverServiceServicer):
     ) -> DriveResponse:
         session = self._require_session(request.session_uuid, context)
         time_now_us = int(request.time_now_us)
-        renderer_data = unpack_renderer_data(request.renderer_data)
+        # alpasim's renderer forwards a payload of its own here; parsing it as
+        # CARLA ground truth could "succeed" on foreign bytes.
+        renderer_data = (
+            None
+            if self._mode == "alpasim"
+            else unpack_renderer_data(request.renderer_data)
+        )
         # The contract has no LiDAR RPC, so sweeps ride in renderer_data; recorded
         # here, before drive, they reach the policy exactly as camera frames do.
         if renderer_data is not None:
@@ -253,21 +279,37 @@ class EgodriverServicer(EgodriverServiceServicer):
                 for plan in result.sampled_trajectories_in_rig
             ]
 
-        debug = CarlaDriveDebugInfo(
-            policy_name=self._driver.name,
-            inference_seconds=elapsed,
-            scalars=result.debug_scalars,
-        )
         return DriveResponse(
             trajectory=trajectory,
             debug_info=DriveResponse.DebugInfo(
-                unstructured_debug_info=pack_debug_info(debug),
+                unstructured_debug_info=self._debug_payload(
+                    elapsed, result.debug_scalars
+                ),
                 sampled_trajectories=sampled,
             ),
             terminate_session=result.terminate_session,
         )
 
     # -- helpers ---------------------------------------------------------------
+
+    def _debug_payload(self, elapsed: float, scalars: Dict[str, float]) -> bytes:
+        """``unstructured_debug_info`` in the form this mode's runtime reads."""
+        if self._mode == "alpasim":
+            # Builtins only, so unpickling it needs nothing from this package.
+            return pickle.dumps(
+                {
+                    "policy_name": self._driver.name,
+                    "inference_seconds": float(elapsed),
+                    "scalars": {str(k): float(v) for k, v in scalars.items()},
+                }
+            )
+        return pack_debug_info(
+            CarlaDriveDebugInfo(
+                policy_name=self._driver.name,
+                inference_seconds=elapsed,
+                scalars=scalars,
+            )
+        )
 
     def _record_frame(self, session: SessionState, frame: SensorFrame) -> None:
         """Record one sensor frame in ``session`` and announce it; every sensor's path."""

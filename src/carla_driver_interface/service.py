@@ -17,6 +17,12 @@ opaque ``bytes`` fields the contract leaves to each runtime:
   ``unstructured_debug_info`` is the pickled ``dict`` alpasim's evaluation unpickles
   (``policy_name``, ``inference_seconds``, ``scalars``), as alpasim's own driver
   answers.
+
+The cameras' ``rig_to_camera`` differ too.  A policy always sees the camera body's
+pose in the rig (x along the optical axis, y left, z up), as autoware_carla_scenario
+declares it; alpasim's renderers declare the optical frame's (x right, y down, z
+along the optical axis), so alpasim mode rotates each camera into the body frame
+before the policy sees it.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from typing import Dict, Literal, Optional, get_args
 
 import grpc
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from . import __version__
 from .driver import (
@@ -39,11 +46,12 @@ from .driver import (
     SensorFrame,
     SessionState,
 )
-from .geometry import Pose, Trajectory
+from .geometry import BODY_TO_OPTICAL, Pose, Trajectory
 from .hdmap import MapFiles
 from .protocol import (
     ALPASIM_API_VERSION,
     ALPASIM_REV,
+    AvailableCamera,
     CarlaDriveDebugInfo,
     CarlaRendererData,
     DriveRequest,
@@ -97,7 +105,9 @@ class EgodriverServicer(EgodriverServiceServicer):
                     f"Session {request.session_uuid} already exists.",
                 )
             cameras = {
-                cam.logical_id: cam
+                cam.logical_id: (
+                    _optical_to_body(cam) if self._mode == "alpasim" else cam
+                )
                 for cam in request.rollout_spec.vehicle.available_cameras
             }
             session = SessionState(
@@ -344,6 +354,16 @@ class EgodriverServicer(EgodriverServiceServicer):
                 "unreachable: context.abort raises"
             )  # pragma: no cover
         return session
+
+
+def _optical_to_body(camera: AvailableCamera) -> AvailableCamera:
+    """*camera* with ``rig_to_camera`` turned from its optical frame to its body's."""
+    pose = Pose.from_proto(camera.rig_to_camera)
+    body = pose.rotation * Rotation.from_matrix(BODY_TO_OPTICAL).inv()
+    converted = AvailableCamera()
+    converted.CopyFrom(camera)
+    converted.rig_to_camera.CopyFrom(Pose.from_rotation(pose.position, body).to_proto())
+    return converted
 
 
 def _rig_plan_to_local(

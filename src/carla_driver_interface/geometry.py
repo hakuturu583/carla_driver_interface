@@ -41,12 +41,20 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from ._proto import common_pb2
 
-__all__ = ["Pose", "Trajectory", "waypoints_to_proto"]
+__all__ = ["BODY_TO_OPTICAL", "Pose", "Trajectory", "waypoints_to_proto"]
 
 #: Quaternion norms below this are treated as degenerate and replaced by the identity.
 _QUAT_NORM_EPSILON: float = 1e-12
 
 _AXES = "xyz"
+
+#: A camera body (x along the optical axis, y left, z up) to its optical frame (x
+#: right, y down, z along the optical axis): the optical axes as columns, in body
+#: coordinates.  ``body_rotation * Rotation.from_matrix(BODY_TO_OPTICAL)`` is the
+#: optical frame's rotation.
+BODY_TO_OPTICAL: NDArray[np.float64] = np.array(
+    [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]]
+)
 
 
 def _rotation(quat_xyzw: ArrayLike) -> Rotation:

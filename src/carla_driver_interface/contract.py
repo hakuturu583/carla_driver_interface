@@ -43,6 +43,7 @@ __all__ = [
     "CONTRACT_REVISION",
     "LEGACY_REVISION",
     "METADATA_KEY",
+    "SUPPORTED_REVISIONS",
     "ContractError",
     "camera_to_revision",
     "cameras_to_revision",

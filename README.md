@@ -94,7 +94,9 @@ that declares nothing is taken to speak:
 
 Everything else (sessions, frames, ego history, the rig/local conversion) is the same, and
 so is a policy: `BaseDriver` does not change. SIGTERM stops the server cleanly in either
-mode, so `docker stop` does too.
+mode, so `docker stop` does too. Serve alpasim in alpasim mode: in carla mode its
+cameras would be taken as revision 1 and turned into the wrong frame (the server logs
+that it translated them).
 
 **2. Build an image.**
 

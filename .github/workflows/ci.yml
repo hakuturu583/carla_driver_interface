@@ -80,8 +80,10 @@ jobs:
           docker run -d --rm --name driver -p 50252:50051 carla-driver-interface-driver:ci
           trap 'docker logs driver || true; docker stop driver >/dev/null 2>&1 || true' EXIT
 
-          for _ in $(seq 60); do
-            if (exec 3<>/dev/tcp/127.0.0.1/50252) 2>/dev/null; then
+          # Docker's port proxy accepts connections before the server inside
+          # listens, so wait for the server to say it is serving.
+          for _ in $(seq 120); do
+            if docker logs driver 2>&1 | grep -q " serving on "; then
               break
             fi
             sleep 0.5

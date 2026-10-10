@@ -60,6 +60,11 @@ world's map as files (`ctx.map`) and every traffic light resolved into that map'
 elements (`ctx.stop_lines()`, `carla_driver_interface.hdmap`). CARLA ground truth arrives
 in `ctx.renderer_data` (`None` when an alpasim runtime drives the policy).
 
+A camera's mount is `session.cameras[logical_id].rig_to_camera`: the pose of its
+**optical** frame in the rig (x right, y down, z along the optical axis), as alpasim's
+renderers declare it, whichever runtime drives the policy. `geometry.optical_to_body`
+gives the camera body's pose (x along the optical axis, y left, z up).
+
 ## Testing a policy without CARLA
 
 ```console
@@ -78,16 +83,20 @@ alpasim runs its driver as a container its wizard starts, and its runtime drives
 the same `egodriver.EgodriverService`. Three commands take a policy there.
 
 **1. Serve in alpasim mode.** `serve --mode alpasim` serves the policy as before, except
-for the two opaque `bytes` fields the contract leaves to each runtime:
+for the two opaque `bytes` fields the contract leaves to each runtime, and what a client
+that declares nothing is taken to speak:
 
 | | `--mode carla` (default) | `--mode alpasim` |
 | --- | --- | --- |
 | `DriveRequest.renderer_data` | read as `CarlaRendererData` (`ctx.renderer_data`, `ctx.map`, LiDAR) | never parsed: it is alpasim's renderer's own payload; `ctx.renderer_data` is `None` |
 | `DriveResponse.debug_info.unstructured_debug_info` | a `CarlaDriveDebugInfo` | the pickled `dict` alpasim's evaluation unpickles (`policy_name`, `inference_seconds`, `scalars`), as alpasim's own driver answers |
+| a client that declares no contract revision ([Versioning](#versioning)) | speaks revision 1: its cameras are translated | speaks revision 2, alpasim's own convention |
 
 Everything else (sessions, frames, ego history, the rig/local conversion) is the same, and
 so is a policy: `BaseDriver` does not change. SIGTERM stops the server cleanly in either
-mode, so `docker stop` does too.
+mode, so `docker stop` does too. Serve alpasim in alpasim mode: in carla mode its
+cameras would be taken as revision 1 and turned into the wrong frame (the server logs
+that it translated them).
 
 **2. Build an image.**
 
@@ -185,16 +194,38 @@ is the runtime's own contract, not the egodriver one. Messages not re-exported b
 ## Versioning
 
 carla-driver-interface follows [semantic versioning](https://semver.org) on its own,
-independently of autoware_carla_scenario or any policy. The compatibility unit is the gRPC
-wire contract (`proto/`): any 1.x policy server and any runtime built against 1.x
-interoperate, so depend on it with a range (`carla-driver-interface>=1.0,<2`), not an
-exact pin.
+independently of autoware_carla_scenario or any policy. Its major version is tied to the
+**contract revision** (`carla_driver_interface.contract`): what the wire means beyond the
+messages alpasim's proto fixes.
+
+| Revision | Releases | `AvailableCamera.rig_to_camera` |
+| --- | --- | --- |
+| 1 | 1.x | the camera **body** in the rig (x along the optical axis, y left, z up) |
+| 2 | 2.x | the camera's **optical** frame in the rig (x right, y down, z along the optical axis), as alpasim declares it |
+
+Each side declares its revision in gRPC metadata (`carla-driver-interface-contract`): a
+server in its answer to `get_version`, a client with `start_session`. A side that declares
+none is taken to speak revision 1, except an alpasim runtime (`--mode alpasim`), which
+speaks alpasim's own convention, revision 2. A 2.x server translates whatever its client
+speaks, and a 2.x client (`contract.negotiate`, as `FakeLoop` does) declares its cameras
+in whatever its server speaks. A policy always sees revision 2. So releases pair across
+processes, where no package range can see both sides:
+
+| Client \ policy server | 1.x | 2.x |
+| --- | --- | --- |
+| autoware_carla_scenario 4.x (carla-driver-interface 1.x) | yes | yes (translated by the server) |
+| a carla-driver-interface 2.x client | yes (translated by the client) | yes |
+| an alpasim runtime | no: 1.x reads alpasim's cameras as camera bodies | yes |
+
+Within one environment, depend on a range of one major
+(`carla-driver-interface>=2.0,<3`), not an exact pin.
 
 - **patch**: fixes that change neither the wire nor the Python API;
 - **minor**: additions — new fields or messages in the `carla_driver` extension (old peers
   ignore them), new Python API;
-- **major**: anything that breaks a peer or a policy — a changed or removed field number,
-  a renamed service, a removed Python API.
+- **major**: anything that breaks a peer or a policy — a new contract revision, a changed
+  or removed field number, a renamed service, a removed Python API. A new revision comes
+  with the translation from the previous one, so peers of adjacent majors still pair.
 
 The vendored alpasim contract is never edited; following a newer alpasim revision is a
 minor release when it is wire-compatible and a major one when it is not.

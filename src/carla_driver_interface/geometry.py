@@ -41,12 +41,26 @@ from scipy.spatial.transform import Rotation, Slerp
 
 from ._proto import common_pb2
 
-__all__ = ["Pose", "Trajectory", "waypoints_to_proto"]
+__all__ = [
+    "BODY_TO_OPTICAL",
+    "Pose",
+    "Trajectory",
+    "body_to_optical",
+    "optical_to_body",
+    "waypoints_to_proto",
+]
 
 #: Quaternion norms below this are treated as degenerate and replaced by the identity.
 _QUAT_NORM_EPSILON: float = 1e-12
 
 _AXES = "xyz"
+
+#: A camera body (x along the optical axis, y left, z up) to its optical frame (x
+#: right, y down, z along the optical axis): the optical axes as columns, in body
+#: coordinates.
+BODY_TO_OPTICAL: NDArray[np.float64] = np.array(
+    [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]]
+)
 
 
 def _rotation(quat_xyzw: ArrayLike) -> Rotation:
@@ -320,3 +334,23 @@ def waypoints_to_proto(points: NDArray[np.float64]) -> List[common_pb2.Vec3]:
         common_pb2.Vec3(x=float(point[0]), y=float(point[1]), z=float(point[2]))
         for point in points
     ]
+
+
+def body_to_optical(camera_body: Pose) -> Pose:
+    """The pose of a camera's optical frame, given its body's (same origin).
+
+    The body frame is x along the optical axis, y left, z up; the optical frame,
+    alpasim's ``rig_to_camera`` convention, is x right, y down, z along the axis.
+    """
+    return Pose.from_rotation(
+        camera_body.position,
+        camera_body.rotation * Rotation.from_matrix(BODY_TO_OPTICAL),
+    )
+
+
+def optical_to_body(camera_optical: Pose) -> Pose:
+    """The pose of a camera's body, given its optical frame's; :func:`body_to_optical` undone."""
+    return Pose.from_rotation(
+        camera_optical.position,
+        camera_optical.rotation * Rotation.from_matrix(BODY_TO_OPTICAL).inv(),
+    )

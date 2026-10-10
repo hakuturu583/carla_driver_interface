@@ -17,6 +17,12 @@ opaque ``bytes`` fields the contract leaves to each runtime:
   ``unstructured_debug_info`` is the pickled ``dict`` alpasim's evaluation unpickles
   (``policy_name``, ``inference_seconds``, ``scalars``), as alpasim's own driver
   answers.
+
+Whatever the client, the policy sees the cameras as contract revision 2 declares
+them (:mod:`carla_driver_interface.contract`): ``rig_to_camera`` is the camera's
+optical frame, as alpasim's renderers declare it. A client that speaks revision 1
+(autoware_carla_scenario 4.x, which declares the camera body) has its cameras
+translated.
 """
 
 from __future__ import annotations
@@ -31,6 +37,14 @@ import grpc
 import numpy as np
 
 from . import __version__
+from .contract import (
+    CONTRACT_REVISION,
+    LEGACY_REVISION,
+    ContractError,
+    cameras_to_revision,
+    client_revision,
+    contract_metadata,
+)
 from .driver import (
     BaseDriver,
     CameraFrame,
@@ -90,16 +104,36 @@ class EgodriverServicer(EgodriverServiceServicer):
     def start_session(
         self, request: DriveSessionRequest, context: grpc.ServicerContext
     ) -> SessionRequestStatus:
+        # An upstream alpasim runtime declares nothing and speaks alpasim's own
+        # convention; a CARLA client that declares nothing predates revisions.
+        try:
+            revision = client_revision(
+                context,
+                CONTRACT_REVISION if self._mode == "alpasim" else LEGACY_REVISION,
+            )
+        except ContractError as error:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
+            raise AssertionError(
+                "unreachable: context.abort raises"
+            )  # pragma: no cover
+        if revision != CONTRACT_REVISION:
+            logger.warning(
+                "session %s: the client speaks contract revision %d; translating its "
+                "cameras to revision %d (upgrade it to drop the translation)",
+                request.session_uuid,
+                revision,
+                CONTRACT_REVISION,
+            )
+        declared = cameras_to_revision(
+            request.rollout_spec.vehicle.available_cameras, revision, CONTRACT_REVISION
+        )
         with self._sessions_lock:
             if request.session_uuid in self._sessions:
                 context.abort(
                     grpc.StatusCode.ALREADY_EXISTS,
                     f"Session {request.session_uuid} already exists.",
                 )
-            cameras = {
-                cam.logical_id: cam
-                for cam in request.rollout_spec.vehicle.available_cameras
-            }
+            cameras = {cam.logical_id: cam for cam in declared}
             session = SessionState(
                 uuid=request.session_uuid,
                 seed=int(request.random_seed),
@@ -142,6 +176,7 @@ class EgodriverServicer(EgodriverServiceServicer):
         return Empty()
 
     def get_version(self, request: Empty, context: grpc.ServicerContext) -> VersionId:
+        context.send_initial_metadata(contract_metadata())
         version = VersionId(
             version_id=f"{self._driver.name}-carla-driver-interface-{__version__}",
             git_hash=ALPASIM_REV,

@@ -28,7 +28,13 @@ import grpc
 import numpy as np
 from numpy.typing import NDArray
 
-from .geometry import Pose, Trajectory, waypoints_to_proto
+from .contract import (
+    CONTRACT_REVISION,
+    camera_to_revision,
+    contract_metadata,
+    negotiate,
+)
+from .geometry import Pose, Trajectory, body_to_optical, waypoints_to_proto
 from .protocol import (
     AvailableCamera,
     CameraSpec,
@@ -89,7 +95,8 @@ class FakeCamera:
         ) @ Pose.from_axis_angle(1, math.radians(self.pitch_down_deg))
         return Pose(np.array([self.x, self.y, self.z]), rotation.quat_xyzw)
 
-    def available_camera(self) -> AvailableCamera:
+    def available_camera(self, revision: int = CONTRACT_REVISION) -> AvailableCamera:
+        """The camera as contract revision *revision* declares it."""
         spec = CameraSpec(
             opencv_pinhole_param=OpenCVPinholeCameraParam(
                 principal_point_x=self.width / 2.0,
@@ -102,11 +109,12 @@ class FakeCamera:
             resolution_h=self.height,
             shutter_type=ShutterType.GLOBAL,
         )
-        return AvailableCamera(
+        camera = AvailableCamera(
             intrinsics=spec,
-            rig_to_camera=self.pose_in_rig().to_proto(),
+            rig_to_camera=body_to_optical(self.pose_in_rig()).to_proto(),
             logical_id=self.logical_id,
         )
+        return camera_to_revision(camera, CONTRACT_REVISION, revision)
 
 
 @dataclass
@@ -188,12 +196,15 @@ class FakeLoop:
     def run(self, steps: int, *, seed: int = 0) -> LoopResult:
         """Run one session of ``steps`` drive calls and close it."""
         session = str(uuid.uuid4())
+        _, revision = negotiate(self._stub, timeout=self.timeout_s)
         request = DriveSessionRequest(session_uuid=session, random_seed=seed)
         request.debug_info.scene_id = "fake:straight_road"
         request.rollout_spec.vehicle.available_cameras.extend(
-            camera.available_camera() for camera in self.cameras
+            camera.available_camera(revision) for camera in self.cameras
         )
-        self._stub.start_session(request, timeout=self.timeout_s)
+        self._stub.start_session(
+            request, timeout=self.timeout_s, metadata=contract_metadata(revision)
+        )
 
         result = LoopResult()
         pose = Pose.from_xyz_yaw(

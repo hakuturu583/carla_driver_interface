@@ -24,6 +24,13 @@ class TrafficLightState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TRAFFIC_LIGHT_STATE_GREEN: _ClassVar[TrafficLightState]
     TRAFFIC_LIGHT_STATE_OFF: _ClassVar[TrafficLightState]
 
+class TurnIndicator(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TURN_INDICATOR_NO_COMMAND: _ClassVar[TurnIndicator]
+    TURN_INDICATOR_DISABLE: _ClassVar[TurnIndicator]
+    TURN_INDICATOR_ENABLE_LEFT: _ClassVar[TurnIndicator]
+    TURN_INDICATOR_ENABLE_RIGHT: _ClassVar[TurnIndicator]
+
 class CompatLevel(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     COMPAT_LEVEL_UNSPECIFIED: _ClassVar[CompatLevel]
@@ -38,6 +45,10 @@ TRAFFIC_LIGHT_STATE_RED: TrafficLightState
 TRAFFIC_LIGHT_STATE_YELLOW: TrafficLightState
 TRAFFIC_LIGHT_STATE_GREEN: TrafficLightState
 TRAFFIC_LIGHT_STATE_OFF: TrafficLightState
+TURN_INDICATOR_NO_COMMAND: TurnIndicator
+TURN_INDICATOR_DISABLE: TurnIndicator
+TURN_INDICATOR_ENABLE_LEFT: TurnIndicator
+TURN_INDICATOR_ENABLE_RIGHT: TurnIndicator
 COMPAT_LEVEL_UNSPECIFIED: CompatLevel
 COMPAT_LEVEL_EXACT: CompatLevel
 COMPAT_LEVEL_PARTIAL: CompatLevel
@@ -142,7 +153,7 @@ class LidarSweep(_message.Message):
     def __init__(self, logical_id: _Optional[str] = ..., timestamp_us: _Optional[int] = ..., rig_to_lidar: _Optional[_Union[_common_pb2.Pose, _Mapping]] = ..., num_points: _Optional[int] = ..., points_xyzi: _Optional[bytes] = ...) -> None: ...
 
 class CarlaDriveDebugInfo(_message.Message):
-    __slots__ = ("policy_name", "inference_seconds", "scalars")
+    __slots__ = ("policy_name", "inference_seconds", "scalars", "turn_indicator")
     class ScalarsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -153,10 +164,12 @@ class CarlaDriveDebugInfo(_message.Message):
     POLICY_NAME_FIELD_NUMBER: _ClassVar[int]
     INFERENCE_SECONDS_FIELD_NUMBER: _ClassVar[int]
     SCALARS_FIELD_NUMBER: _ClassVar[int]
+    TURN_INDICATOR_FIELD_NUMBER: _ClassVar[int]
     policy_name: str
     inference_seconds: float
     scalars: _containers.ScalarMap[str, float]
-    def __init__(self, policy_name: _Optional[str] = ..., inference_seconds: _Optional[float] = ..., scalars: _Optional[_Mapping[str, float]] = ...) -> None: ...
+    turn_indicator: TurnIndicator
+    def __init__(self, policy_name: _Optional[str] = ..., inference_seconds: _Optional[float] = ..., scalars: _Optional[_Mapping[str, float]] = ..., turn_indicator: _Optional[_Union[TurnIndicator, str]] = ...) -> None: ...
 
 class CarlaDriveSessionInfo(_message.Message):
     __slots__ = ("base", "map_name", "scenario_name", "fixed_delta_us", "policy_timestep_us", "rear_axle_offset_m", "cameras")

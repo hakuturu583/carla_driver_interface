@@ -23,6 +23,7 @@ import io
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Dict, List, Optional, Union
 
 import numpy as np
@@ -46,6 +47,7 @@ __all__ = [
     "LidarFrame",
     "SensorFrame",
     "SessionState",
+    "TurnIndicator",
 ]
 
 
@@ -196,6 +198,22 @@ class DriveContext:
         return self.map.stop_lines(self.renderer_data.traffic_lights)
 
 
+class TurnIndicator(IntEnum):
+    """What a policy asks of the ego's turn indicators (``DriveResult.turn_indicator``).
+
+    The values are ``autoware_vehicle_msgs/TurnIndicatorsCommand``'s, and the wire's
+    (``carla_driver.v0.TurnIndicator``): a classifier over Autoware's recorded
+    DISABLE / LEFT / RIGHT signal maps its class ``i`` to ``TurnIndicator(i + 1)``.
+    """
+
+    #: Say nothing: the runtime leaves the indicators as they are.
+    NO_COMMAND = 0
+    #: Both indicators off.
+    DISABLE = 1
+    ENABLE_LEFT = 2
+    ENABLE_RIGHT = 3
+
+
 @dataclass
 class DriveResult:
     """What a policy returns.
@@ -211,6 +229,10 @@ class DriveResult:
     debug_scalars: Dict[str, float] = field(default_factory=dict)
     #: Alternative plans considered, in the rig frame.
     sampled_trajectories_in_rig: List[Trajectory] = field(default_factory=list)
+    #: The turn indicators to show (``CarlaDriveDebugInfo.turn_indicator``), held
+    #: by the runtime until a later result sets them; ``NO_COMMAND`` changes
+    #: nothing.  An upstream alpasim runtime has nowhere to show them.
+    turn_indicator: TurnIndicator = TurnIndicator.NO_COMMAND
 
 
 class BaseDriver(ABC):

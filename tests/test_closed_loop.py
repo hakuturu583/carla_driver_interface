@@ -11,12 +11,14 @@ from carla_driver_interface.driver import (
     DriveContext,
     DriveResult,
     SessionState,
+    TurnIndicator,
 )
 from carla_driver_interface.geometry import Pose, Trajectory
 from carla_driver_interface.policies import ConstantSpeedPolicy, RouteFollowerPolicy
 from carla_driver_interface.protocol import (
     EgodriverServiceStub,
     Empty,
+    carla_driver_pb2,
     channel_options,
 )
 from carla_driver_interface.server import serving
@@ -81,6 +83,53 @@ def test_observations_reach_the_policy() -> None:
     assert recorder.frames[0].shape == (90, 160, 3)
     # The route is the lane ahead, in the rig frame.
     assert session.route_waypoints_in_rig[1, 0] > session.route_waypoints_in_rig[0, 0]
+
+
+class _Signals(BaseDriver):
+    """Left for two steps, then off, then silent."""
+
+    name = "signals"
+
+    def __init__(self) -> None:
+        self.steps = 0
+
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        self.steps += 1
+        indicator = (
+            TurnIndicator.ENABLE_LEFT
+            if self.steps <= 2
+            else TurnIndicator.DISABLE
+            if self.steps == 3
+            else TurnIndicator.NO_COMMAND
+        )
+        return DriveResult(
+            trajectory_in_rig=Trajectory.empty(), turn_indicator=indicator
+        )
+
+
+def test_the_turn_indicator_reaches_the_runtime() -> None:
+    result = run(_Signals(), steps=4)
+    assert [d.turn_indicator for d in result.debug if d is not None] == [
+        carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
+        carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
+        carla_driver_pb2.TURN_INDICATOR_DISABLE,
+        carla_driver_pb2.TURN_INDICATOR_NO_COMMAND,
+    ]
+
+
+def test_a_policy_that_sets_no_turn_indicator_commands_nothing() -> None:
+    result = run(ConstantSpeedPolicy(), steps=2)
+    assert all(
+        d is not None and d.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+        for d in result.debug
+    )
+
+
+def test_turn_indicator_values_are_the_wires() -> None:
+    assert {i.name: int(i) for i in TurnIndicator} == {
+        name.removeprefix("TURN_INDICATOR_"): value
+        for name, value in carla_driver_pb2.TurnIndicator.items()
+    }
 
 
 class _Refuses(BaseDriver):

@@ -49,6 +49,7 @@ from .driver import (
     BaseDriver,
     CameraFrame,
     DriveContext,
+    DriveResult,
     LidarFrame,
     SensorFrame,
     SessionState,
@@ -73,6 +74,7 @@ from .protocol import (
     RouteRequest,
     SessionRequestStatus,
     VersionId,
+    carla_driver_pb2,
     pack_debug_info,
     unpack_renderer_data,
 )
@@ -317,9 +319,7 @@ class EgodriverServicer(EgodriverServiceServicer):
         return DriveResponse(
             trajectory=trajectory,
             debug_info=DriveResponse.DebugInfo(
-                unstructured_debug_info=self._debug_payload(
-                    elapsed, result.debug_scalars
-                ),
+                unstructured_debug_info=self._debug_payload(elapsed, result),
                 sampled_trajectories=sampled,
             ),
             terminate_session=result.terminate_session,
@@ -327,8 +327,9 @@ class EgodriverServicer(EgodriverServiceServicer):
 
     # -- helpers ---------------------------------------------------------------
 
-    def _debug_payload(self, elapsed: float, scalars: Dict[str, float]) -> bytes:
+    def _debug_payload(self, elapsed: float, result: DriveResult) -> bytes:
         """``unstructured_debug_info`` in the form this mode's runtime reads."""
+        scalars = result.debug_scalars
         if self._mode == "alpasim":
             # Builtins only, so unpickling it needs nothing from this package.
             return pickle.dumps(
@@ -343,6 +344,9 @@ class EgodriverServicer(EgodriverServiceServicer):
                 policy_name=self._driver.name,
                 inference_seconds=elapsed,
                 scalars=scalars,
+                turn_indicator=carla_driver_pb2.TurnIndicator.Name(
+                    result.turn_indicator
+                ),
             )
         )
 

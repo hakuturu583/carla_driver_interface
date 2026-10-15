@@ -144,12 +144,29 @@ message LidarSweep {
 // Driver -> runtime payload (carried in DriveResponse.DebugInfo)
 ////////////////////////////////////////////////////////////////////////////////
 
+// What a policy asks of the ego's turn indicators. The numbers are
+// `autoware_vehicle_msgs/TurnIndicatorsCommand`'s, so a policy trained on
+// Autoware's recorded signal passes its class through unchanged.
+enum TurnIndicator {
+  // The policy says nothing: the runtime leaves the indicators as they are.
+  // What a policy that predates the field sends.
+  TURN_INDICATOR_NO_COMMAND = 0;
+  // Both indicators off.
+  TURN_INDICATOR_DISABLE = 1;
+  TURN_INDICATOR_ENABLE_LEFT = 2;
+  TURN_INDICATOR_ENABLE_RIGHT = 3;
+}
+
 // Packed into `egodriver.DriveResponse.DebugInfo.unstructured_debug_info`.
 message CarlaDriveDebugInfo {
   string policy_name = 1;
   float inference_seconds = 2;
   // Free-form scalars the policy wants surfaced in the rollout metrics.
   map<string, double> scalars = 3;
+  // The turn indicators the policy asks for, held until the next response
+  // that sets them. Carried here because the egodriver contract has no field
+  // for them.
+  TurnIndicator turn_indicator = 4;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

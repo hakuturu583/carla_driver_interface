@@ -52,6 +52,7 @@ from .driver import (
     LidarFrame,
     SensorFrame,
     SessionState,
+    TurnIndicator,
 )
 from .geometry import Pose, Trajectory
 from .hdmap import MapFiles
@@ -76,7 +77,6 @@ from .protocol import (
     VehicleCommand,
     VehicleCommandRequest,
     VersionId,
-    carla_driver_pb2,
     pack_debug_info,
     unpack_renderer_data,
 )
@@ -107,8 +107,6 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
         self._sessions_lock = threading.Lock()
         #: Opened map sets by ``map_id``; a map does not change under its id.
         self._maps: Dict[str, MapFiles] = {}
-        #: The latest drive's vehicle command, by session; under ``_sessions_lock``.
-        self._commands: Dict[str, VehicleCommand] = {}
 
     # -- session lifecycle -----------------------------------------------------
 
@@ -177,7 +175,6 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
     ) -> Empty:
         with self._sessions_lock:
             session = self._sessions.pop(request.session_uuid, None)
-            self._commands.pop(request.session_uuid, None)
         if session is None:
             logger.warning("close_session for unknown session %s", request.session_uuid)
             return Empty()
@@ -306,16 +303,14 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
         result = self._driver.drive(ctx)
         elapsed = time.perf_counter() - started
 
+        indicator = _turn_indicator(result.turn_indicator, self._driver.name)
         with session.lock:
             session.drive_count += 1
             anchor = session.latest_pose()
-        command = VehicleCommand(
-            time_now_us=time_now_us,
-            turn_indicator=carla_driver_pb2.TurnIndicator.Name(result.turn_indicator),
-        )
-        with self._sessions_lock:
-            if request.session_uuid in self._sessions:
-                self._commands[request.session_uuid] = command
+            # A drive that finishes after a later one does not undo its command.
+            if time_now_us >= session.turn_indicator_time_us:
+                session.turn_indicator = indicator
+                session.turn_indicator_time_us = time_now_us
 
         # Before the first egomotion observation there is no frame to express a
         # plan in; upstream answers an empty trajectory, which the runtime treats
@@ -351,12 +346,14 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
     ) -> VehicleCommand:
         """The command the policy decided with the session's latest drive.
 
-        Before the first drive: no command (``time_now_us`` 0, ``NO_COMMAND``).
+        ``NO_COMMAND`` before the first drive.
         """
-        self._require_session(request.session_uuid, context)
-        with self._sessions_lock:
-            command = self._commands.get(request.session_uuid)
-        return command if command is not None else VehicleCommand()
+        session = self._require_session(request.session_uuid, context)
+        with session.lock:
+            return VehicleCommand(
+                time_now_us=session.turn_indicator_time_us,
+                turn_indicator=int(session.turn_indicator),  # type: ignore[arg-type]
+            )
 
     # -- helpers ---------------------------------------------------------------
 
@@ -412,6 +409,24 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
                 "unreachable: context.abort raises"
             )  # pragma: no cover
         return session
+
+
+def _turn_indicator(value: int, policy_name: str) -> TurnIndicator:
+    """*value* as a :class:`TurnIndicator`; ``NO_COMMAND`` when it is none.
+
+    A policy's bad indicator must not cost it its plan, so it is logged and
+    dropped rather than failing the drive.
+    """
+    try:
+        return TurnIndicator(value)
+    except (ValueError, TypeError):
+        logger.warning(
+            "policy %r returned turn_indicator=%r, which is not a TurnIndicator; "
+            "sending NO_COMMAND",
+            policy_name,
+            value,
+        )
+        return TurnIndicator.NO_COMMAND
 
 
 def _rig_plan_to_local(

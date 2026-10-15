@@ -144,6 +144,13 @@ class SessionState:
     #: Latest recorded ground truth in the rig frame, when the runtime sends one.
     ground_truth_in_rig: Optional[Trajectory] = None
     drive_count: int = 0
+    #: The turn indicators the policy commanded with its latest drive, and that
+    #: drive's ``time_now_us`` (``CarlaVehicleService.get_vehicle_command``);
+    #: ``NO_COMMAND`` and 0 before the first drive.
+    turn_indicator: "TurnIndicator" = field(
+        default_factory=lambda: TurnIndicator.NO_COMMAND
+    )
+    turn_indicator_time_us: int = 0
 
     #: Guards mutation from concurrent gRPC handler threads.
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)

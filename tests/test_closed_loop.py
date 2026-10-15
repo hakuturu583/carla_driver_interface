@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent import futures
+
 import grpc
 import numpy as np
 import pytest
@@ -21,10 +23,12 @@ from carla_driver_interface.protocol import (
     EgodriverServiceStub,
     Empty,
     VehicleCommandRequest,
+    add_EgodriverServiceServicer_to_server,
     carla_driver_pb2,
     channel_options,
 )
 from carla_driver_interface.server import serving
+from carla_driver_interface.service import EgodriverServicer
 from carla_driver_interface.testing import FakeCamera, FakeLoop, render_road
 
 
@@ -149,6 +153,42 @@ def test_the_vehicle_command_is_none_before_the_first_drive() -> None:
     assert command.time_now_us == 0
     assert command.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
     assert error.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+class _BadSignal(BaseDriver):
+    """Plans, but answers an indicator class that does not exist."""
+
+    name = "bad_signal"
+
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        plan = Trajectory.empty()
+        plan.append(ctx.time_now_us + 100_000, Pose.from_xyz_yaw(0.5, 0.0, 0.0, 0.0))
+        return DriveResult(trajectory_in_rig=plan, turn_indicator=4)  # type: ignore[arg-type]
+
+
+def test_a_bad_turn_indicator_costs_the_policy_nothing_but_the_command() -> None:
+    result = run(_BadSignal(), steps=3)
+    assert result.steps == 3
+    assert result.ego.positions[-1, 0] > 0.0  # the plans still arrived
+    assert all(
+        c.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+        for c in result.commands
+    )
+
+
+def test_fake_loop_reads_a_server_without_the_vehicle_service_as_no_command() -> None:
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    add_EgodriverServiceServicer_to_server(EgodriverServicer(_Signals()), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        with FakeLoop(f"127.0.0.1:{port}") as loop:
+            result = loop.run(2)
+    finally:
+        server.stop(grace=None)
+    assert [c.turn_indicator for c in result.commands] == [
+        carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+    ] * 2
 
 
 def test_turn_indicator_values_are_the_wires() -> None:

@@ -177,8 +177,8 @@ enum TurnIndicator {
 // egodriver contract carries only the plan, so a runtime that can act on more
 // asks for it with `CarlaVehicleService.get_vehicle_command` after each drive.
 message VehicleCommand {
-  // `DriveRequest.time_now_us` of the drive that decided this command; 0
-  // before the session's first drive.
+  // `DriveRequest.time_now_us` of the drive that decided this command. Before
+  // the session's first drive the command is NO_COMMAND (and this 0).
   fixed64 time_now_us = 1;
   TurnIndicator turn_indicator = 2;
 }

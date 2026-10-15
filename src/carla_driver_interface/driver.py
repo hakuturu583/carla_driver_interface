@@ -23,6 +23,7 @@ import io
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import IntEnum
 from typing import Dict, List, Optional, Union
 
 import numpy as np
@@ -46,6 +47,7 @@ __all__ = [
     "LidarFrame",
     "SensorFrame",
     "SessionState",
+    "TurnIndicator",
 ]
 
 
@@ -142,6 +144,13 @@ class SessionState:
     #: Latest recorded ground truth in the rig frame, when the runtime sends one.
     ground_truth_in_rig: Optional[Trajectory] = None
     drive_count: int = 0
+    #: The turn indicators the policy commanded with its latest drive, and that
+    #: drive's ``time_now_us`` (``CarlaVehicleService.get_vehicle_command``);
+    #: ``NO_COMMAND`` and 0 before the first drive.
+    turn_indicator: "TurnIndicator" = field(
+        default_factory=lambda: TurnIndicator.NO_COMMAND
+    )
+    turn_indicator_time_us: int = 0
 
     #: Guards mutation from concurrent gRPC handler threads.
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -196,6 +205,22 @@ class DriveContext:
         return self.map.stop_lines(self.renderer_data.traffic_lights)
 
 
+class TurnIndicator(IntEnum):
+    """What a policy asks of the ego's turn indicators (``DriveResult.turn_indicator``).
+
+    The values are ``autoware_vehicle_msgs/TurnIndicatorsCommand``'s, and the wire's
+    (``carla_driver.v0.TurnIndicator``, in ``VehicleCommand``): a classifier over Autoware's recorded
+    DISABLE / LEFT / RIGHT signal maps its class ``i`` to ``TurnIndicator(i + 1)``.
+    """
+
+    #: Say nothing: the runtime leaves the indicators as they are.
+    NO_COMMAND = 0
+    #: Both indicators off.
+    DISABLE = 1
+    ENABLE_LEFT = 2
+    ENABLE_RIGHT = 3
+
+
 @dataclass
 class DriveResult:
     """What a policy returns.
@@ -211,6 +236,11 @@ class DriveResult:
     debug_scalars: Dict[str, float] = field(default_factory=dict)
     #: Alternative plans considered, in the rig frame.
     sampled_trajectories_in_rig: List[Trajectory] = field(default_factory=list)
+    #: The turn indicators to show, held by the runtime until a later result
+    #: sets them; ``NO_COMMAND`` changes nothing.  A CARLA runtime fetches it
+    #: (``CarlaVehicleService.get_vehicle_command``); an upstream alpasim runtime
+    #: has no indicators to show.
+    turn_indicator: TurnIndicator = TurnIndicator.NO_COMMAND
 
 
 class BaseDriver(ABC):

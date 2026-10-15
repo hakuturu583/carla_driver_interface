@@ -39,6 +39,7 @@ from .protocol import (
     AvailableCamera,
     CameraSpec,
     CarlaDriveDebugInfo,
+    CarlaVehicleServiceStub,
     DriveRequest,
     DriveSessionCloseRequest,
     DriveSessionRequest,
@@ -51,6 +52,8 @@ from .protocol import (
     RouteRequest,
     ShutterType,
     Vec3,
+    VehicleCommand,
+    VehicleCommandRequest,
     channel_options,
     unpack_debug_info,
 )
@@ -127,6 +130,9 @@ class LoopResult:
     speeds_mps: List[float] = field(default_factory=list)
     #: The policy's debug payload per drive call (``None`` if it sent none).
     debug: List[Optional[CarlaDriveDebugInfo]] = field(default_factory=list)
+    #: The policy's vehicle command after each drive call
+    #: (``CarlaVehicleService.get_vehicle_command``).
+    commands: List[VehicleCommand] = field(default_factory=list)
     #: Number of drive calls made.
     steps: int = 0
     terminated_by_policy: bool = False
@@ -171,6 +177,7 @@ class FakeLoop:
         )
         self._owns_channel = isinstance(target, str)
         self._stub = EgodriverServiceStub(self._channel)
+        self._vehicle = CarlaVehicleServiceStub(self._channel)
         self.cameras = tuple(cameras)
         self.step_s = step_s
         self.initial_speed_mps = initial_speed_mps
@@ -231,6 +238,7 @@ class FakeLoop:
                 result.debug.append(
                     unpack_debug_info(response.debug_info.unstructured_debug_info)
                 )
+                result.commands.append(self._vehicle_command(session))
                 if response.terminate_session:
                     result.terminated_by_policy = True
                     break
@@ -253,6 +261,21 @@ class FakeLoop:
                 DriveSessionCloseRequest(session_uuid=session), timeout=self.timeout_s
             )
         return result
+
+    def _vehicle_command(self, session: str) -> VehicleCommand:
+        """The policy's latest command; none from a server without the service.
+
+        A policy server older than ``CarlaVehicleService`` (< 2.1) answers
+        UNIMPLEMENTED, which the contract reads as "no command".
+        """
+        try:
+            return self._vehicle.get_vehicle_command(
+                VehicleCommandRequest(session_uuid=session), timeout=self.timeout_s
+            )
+        except grpc.RpcError as error:
+            if error.code() != grpc.StatusCode.UNIMPLEMENTED:
+                raise
+            return VehicleCommand()
 
     def _observe(self, session: str, now_us: int, pose: Pose, speed: float) -> None:
         state = DynamicState(linear_velocity=Vec3(x=speed, y=0.0, z=0.0))

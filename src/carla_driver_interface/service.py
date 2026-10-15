@@ -52,6 +52,7 @@ from .driver import (
     LidarFrame,
     SensorFrame,
     SessionState,
+    TurnIndicator,
 )
 from .geometry import Pose, Trajectory
 from .hdmap import MapFiles
@@ -60,6 +61,7 @@ from .protocol import (
     ALPASIM_REV,
     CarlaDriveDebugInfo,
     CarlaRendererData,
+    CarlaVehicleServiceServicer,
     DriveRequest,
     DriveResponse,
     DriveSessionCloseRequest,
@@ -72,6 +74,8 @@ from .protocol import (
     RolloutEgoTrajectory,
     RouteRequest,
     SessionRequestStatus,
+    VehicleCommand,
+    VehicleCommandRequest,
     VersionId,
     pack_debug_info,
     unpack_renderer_data,
@@ -86,8 +90,13 @@ ServiceMode = Literal["carla", "alpasim"]
 SERVICE_MODES: tuple = get_args(ServiceMode)
 
 
-class EgodriverServicer(EgodriverServiceServicer):
-    """Serves one :class:`BaseDriver` over the alpasim egodriver contract."""
+class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
+    """Serves one :class:`BaseDriver` over the alpasim egodriver contract.
+
+    It also serves ``carla_driver.v0.CarlaVehicleService`` on the same sessions:
+    what the policy commands of the vehicle besides its plan
+    (:meth:`get_vehicle_command`), which the egodriver contract cannot carry.
+    """
 
     def __init__(self, driver: BaseDriver, mode: ServiceMode = "carla") -> None:
         if mode not in SERVICE_MODES:
@@ -294,9 +303,14 @@ class EgodriverServicer(EgodriverServiceServicer):
         result = self._driver.drive(ctx)
         elapsed = time.perf_counter() - started
 
+        indicator = _turn_indicator(result.turn_indicator, self._driver.name)
         with session.lock:
             session.drive_count += 1
             anchor = session.latest_pose()
+            # A drive that finishes after a later one does not undo its command.
+            if time_now_us >= session.turn_indicator_time_us:
+                session.turn_indicator = indicator
+                session.turn_indicator_time_us = time_now_us
 
         # Before the first egomotion observation there is no frame to express a
         # plan in; upstream answers an empty trajectory, which the runtime treats
@@ -324,6 +338,22 @@ class EgodriverServicer(EgodriverServiceServicer):
             ),
             terminate_session=result.terminate_session,
         )
+
+    # -- CarlaVehicleService ---------------------------------------------------
+
+    def get_vehicle_command(
+        self, request: VehicleCommandRequest, context: grpc.ServicerContext
+    ) -> VehicleCommand:
+        """The command the policy decided with the session's latest drive.
+
+        ``NO_COMMAND`` before the first drive.
+        """
+        session = self._require_session(request.session_uuid, context)
+        with session.lock:
+            return VehicleCommand(
+                time_now_us=session.turn_indicator_time_us,
+                turn_indicator=int(session.turn_indicator),  # type: ignore[arg-type]
+            )
 
     # -- helpers ---------------------------------------------------------------
 
@@ -379,6 +409,24 @@ class EgodriverServicer(EgodriverServiceServicer):
                 "unreachable: context.abort raises"
             )  # pragma: no cover
         return session
+
+
+def _turn_indicator(value: int, policy_name: str) -> TurnIndicator:
+    """*value* as a :class:`TurnIndicator`; ``NO_COMMAND`` when it is none.
+
+    A policy's bad indicator must not cost it its plan, so it is logged and
+    dropped rather than failing the drive.
+    """
+    try:
+        return TurnIndicator(value)
+    except (ValueError, TypeError):
+        logger.warning(
+            "policy %r returned turn_indicator=%r, which is not a TurnIndicator; "
+            "sending NO_COMMAND",
+            policy_name,
+            value,
+        )
+        return TurnIndicator.NO_COMMAND
 
 
 def _rig_plan_to_local(

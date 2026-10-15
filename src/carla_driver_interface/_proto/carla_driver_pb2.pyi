@@ -24,6 +24,13 @@ class TrafficLightState(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     TRAFFIC_LIGHT_STATE_GREEN: _ClassVar[TrafficLightState]
     TRAFFIC_LIGHT_STATE_OFF: _ClassVar[TrafficLightState]
 
+class TurnIndicator(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TURN_INDICATOR_NO_COMMAND: _ClassVar[TurnIndicator]
+    TURN_INDICATOR_DISABLE: _ClassVar[TurnIndicator]
+    TURN_INDICATOR_ENABLE_LEFT: _ClassVar[TurnIndicator]
+    TURN_INDICATOR_ENABLE_RIGHT: _ClassVar[TurnIndicator]
+
 class CompatLevel(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     COMPAT_LEVEL_UNSPECIFIED: _ClassVar[CompatLevel]
@@ -38,6 +45,10 @@ TRAFFIC_LIGHT_STATE_RED: TrafficLightState
 TRAFFIC_LIGHT_STATE_YELLOW: TrafficLightState
 TRAFFIC_LIGHT_STATE_GREEN: TrafficLightState
 TRAFFIC_LIGHT_STATE_OFF: TrafficLightState
+TURN_INDICATOR_NO_COMMAND: TurnIndicator
+TURN_INDICATOR_DISABLE: TurnIndicator
+TURN_INDICATOR_ENABLE_LEFT: TurnIndicator
+TURN_INDICATOR_ENABLE_RIGHT: TurnIndicator
 COMPAT_LEVEL_UNSPECIFIED: CompatLevel
 COMPAT_LEVEL_EXACT: CompatLevel
 COMPAT_LEVEL_PARTIAL: CompatLevel
@@ -157,6 +168,20 @@ class CarlaDriveDebugInfo(_message.Message):
     inference_seconds: float
     scalars: _containers.ScalarMap[str, float]
     def __init__(self, policy_name: _Optional[str] = ..., inference_seconds: _Optional[float] = ..., scalars: _Optional[_Mapping[str, float]] = ...) -> None: ...
+
+class VehicleCommand(_message.Message):
+    __slots__ = ("time_now_us", "turn_indicator")
+    TIME_NOW_US_FIELD_NUMBER: _ClassVar[int]
+    TURN_INDICATOR_FIELD_NUMBER: _ClassVar[int]
+    time_now_us: int
+    turn_indicator: TurnIndicator
+    def __init__(self, time_now_us: _Optional[int] = ..., turn_indicator: _Optional[_Union[TurnIndicator, str]] = ...) -> None: ...
+
+class VehicleCommandRequest(_message.Message):
+    __slots__ = ("session_uuid",)
+    SESSION_UUID_FIELD_NUMBER: _ClassVar[int]
+    session_uuid: str
+    def __init__(self, session_uuid: _Optional[str] = ...) -> None: ...
 
 class CarlaDriveSessionInfo(_message.Message):
     __slots__ = ("base", "map_name", "scenario_name", "fixed_delta_us", "policy_timestep_us", "rear_axle_offset_m", "cameras")

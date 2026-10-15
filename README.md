@@ -60,6 +60,17 @@ world's map as files (`ctx.map`) and every traffic light resolved into that map'
 elements (`ctx.stop_lines()`, `carla_driver_interface.hdmap`). CARLA ground truth arrives
 in `ctx.renderer_data` (`None` when an alpasim runtime drives the policy).
 
+A policy can also work the ego's turn indicators: `DriveResult(..., turn_indicator=TurnIndicator.ENABLE_LEFT)`
+(`carla_driver_interface.driver.TurnIndicator`). The values are Autoware's
+`TurnIndicatorsCommand` ones (`DISABLE` = 1, `ENABLE_LEFT` = 2, `ENABLE_RIGHT` = 3), so a
+classifier over Autoware's recorded signal answers `TurnIndicator(class_index + 1)`. The
+egodriver contract carries only the plan, so the server also serves
+`carla_driver.v0.CarlaVehicleService` on the same port: after each drive a CARLA runtime
+fetches the policy's `VehicleCommand` with `get_vehicle_command`. autoware_carla_scenario
+lights the ego's indicators with it and holds them until a later step sets them again. The default,
+`NO_COMMAND`, changes nothing -- what a policy that never sets it, or predates it, sends.
+An upstream alpasim runtime has nowhere to show them.
+
 A camera's mount is `session.cameras[logical_id].rig_to_camera`: the pose of its
 **optical** frame in the rig (x right, y down, z along the optical axis), as alpasim's
 renderers declare it, whichever runtime drives the policy. `geometry.optical_to_body`

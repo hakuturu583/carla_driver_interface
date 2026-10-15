@@ -9,7 +9,11 @@ from types import ModuleType
 
 import pytest
 
-from carla_driver_interface.protocol import egodriver_pb2, egodriver_pb2_grpc
+from carla_driver_interface.protocol import (
+    carla_driver_pb2_grpc,
+    egodriver_pb2,
+    egodriver_pb2_grpc,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _COMPILE_SCRIPT = _REPO_ROOT / "scripts" / "compile_protos.py"
@@ -61,6 +65,8 @@ def test_stub_and_servicer_are_available() -> None:
     assert hasattr(egodriver_pb2_grpc, "EgodriverServiceStub")
     assert hasattr(egodriver_pb2_grpc, "EgodriverServiceServicer")
     assert hasattr(egodriver_pb2_grpc, "add_EgodriverServiceServicer_to_server")
+    assert hasattr(carla_driver_pb2_grpc, "CarlaVehicleServiceStub")
+    assert hasattr(carla_driver_pb2_grpc, "add_CarlaVehicleServiceServicer_to_server")
 
 
 # ---------------------------------------------------------------------------

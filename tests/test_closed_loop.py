@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from concurrent import futures
+
 import grpc
 import numpy as np
 import pytest
@@ -11,15 +13,22 @@ from carla_driver_interface.driver import (
     DriveContext,
     DriveResult,
     SessionState,
+    TurnIndicator,
 )
 from carla_driver_interface.geometry import Pose, Trajectory
 from carla_driver_interface.policies import ConstantSpeedPolicy, RouteFollowerPolicy
 from carla_driver_interface.protocol import (
+    CarlaVehicleServiceStub,
+    DriveSessionRequest,
     EgodriverServiceStub,
     Empty,
+    VehicleCommandRequest,
+    add_EgodriverServiceServicer_to_server,
+    carla_driver_pb2,
     channel_options,
 )
 from carla_driver_interface.server import serving
+from carla_driver_interface.service import EgodriverServicer
 from carla_driver_interface.testing import FakeCamera, FakeLoop, render_road
 
 
@@ -81,6 +90,112 @@ def test_observations_reach_the_policy() -> None:
     assert recorder.frames[0].shape == (90, 160, 3)
     # The route is the lane ahead, in the rig frame.
     assert session.route_waypoints_in_rig[1, 0] > session.route_waypoints_in_rig[0, 0]
+
+
+class _Signals(BaseDriver):
+    """Left for two steps, then off, then silent."""
+
+    name = "signals"
+
+    def __init__(self) -> None:
+        self.steps = 0
+
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        self.steps += 1
+        indicator = (
+            TurnIndicator.ENABLE_LEFT
+            if self.steps <= 2
+            else TurnIndicator.DISABLE
+            if self.steps == 3
+            else TurnIndicator.NO_COMMAND
+        )
+        return DriveResult(
+            trajectory_in_rig=Trajectory.empty(), turn_indicator=indicator
+        )
+
+
+def test_the_turn_indicator_reaches_the_runtime() -> None:
+    result = run(_Signals(), steps=4)
+    assert [c.turn_indicator for c in result.commands] == [
+        carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
+        carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
+        carla_driver_pb2.TURN_INDICATOR_DISABLE,
+        carla_driver_pb2.TURN_INDICATOR_NO_COMMAND,
+    ]
+    # Each command names the drive that decided it.
+    assert [c.time_now_us for c in result.commands] == [0, 100_000, 200_000, 300_000]
+
+
+def test_a_policy_that_sets_no_turn_indicator_commands_nothing() -> None:
+    result = run(ConstantSpeedPolicy(), steps=2)
+    assert all(
+        c.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+        for c in result.commands
+    )
+
+
+def test_the_vehicle_command_is_none_before_the_first_drive() -> None:
+    with serving(_Signals(), port=0, host="127.0.0.1") as port:
+        with grpc.insecure_channel(
+            f"127.0.0.1:{port}", options=channel_options()
+        ) as channel:
+            EgodriverServiceStub(channel).start_session(
+                DriveSessionRequest(session_uuid="s"), timeout=10
+            )
+            vehicle = CarlaVehicleServiceStub(channel)
+            command = vehicle.get_vehicle_command(
+                VehicleCommandRequest(session_uuid="s"), timeout=10
+            )
+            with pytest.raises(grpc.RpcError) as error:
+                vehicle.get_vehicle_command(
+                    VehicleCommandRequest(session_uuid="unknown"), timeout=10
+                )
+    assert command.time_now_us == 0
+    assert command.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+    assert error.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+class _BadSignal(BaseDriver):
+    """Plans, but answers an indicator class that does not exist."""
+
+    name = "bad_signal"
+
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        plan = Trajectory.empty()
+        plan.append(ctx.time_now_us + 100_000, Pose.from_xyz_yaw(0.5, 0.0, 0.0, 0.0))
+        return DriveResult(trajectory_in_rig=plan, turn_indicator=4)  # type: ignore[arg-type]
+
+
+def test_a_bad_turn_indicator_costs_the_policy_nothing_but_the_command() -> None:
+    result = run(_BadSignal(), steps=3)
+    assert result.steps == 3
+    assert result.ego.positions[-1, 0] > 0.0  # the plans still arrived
+    assert all(
+        c.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+        for c in result.commands
+    )
+
+
+def test_fake_loop_reads_a_server_without_the_vehicle_service_as_no_command() -> None:
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    add_EgodriverServiceServicer_to_server(EgodriverServicer(_Signals()), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        with FakeLoop(f"127.0.0.1:{port}") as loop:
+            result = loop.run(2)
+    finally:
+        server.stop(grace=None)
+    assert [c.turn_indicator for c in result.commands] == [
+        carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+    ] * 2
+
+
+def test_turn_indicator_values_are_the_wires() -> None:
+    assert {i.name: int(i) for i in TurnIndicator} == {
+        name.removeprefix("TURN_INDICATOR_"): value
+        for name, value in carla_driver_pb2.TurnIndicator.items()
+    }
 
 
 class _Refuses(BaseDriver):

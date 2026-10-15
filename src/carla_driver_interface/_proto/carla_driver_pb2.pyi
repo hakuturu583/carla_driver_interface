@@ -153,7 +153,7 @@ class LidarSweep(_message.Message):
     def __init__(self, logical_id: _Optional[str] = ..., timestamp_us: _Optional[int] = ..., rig_to_lidar: _Optional[_Union[_common_pb2.Pose, _Mapping]] = ..., num_points: _Optional[int] = ..., points_xyzi: _Optional[bytes] = ...) -> None: ...
 
 class CarlaDriveDebugInfo(_message.Message):
-    __slots__ = ("policy_name", "inference_seconds", "scalars", "turn_indicator")
+    __slots__ = ("policy_name", "inference_seconds", "scalars")
     class ScalarsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -164,12 +164,24 @@ class CarlaDriveDebugInfo(_message.Message):
     POLICY_NAME_FIELD_NUMBER: _ClassVar[int]
     INFERENCE_SECONDS_FIELD_NUMBER: _ClassVar[int]
     SCALARS_FIELD_NUMBER: _ClassVar[int]
-    TURN_INDICATOR_FIELD_NUMBER: _ClassVar[int]
     policy_name: str
     inference_seconds: float
     scalars: _containers.ScalarMap[str, float]
+    def __init__(self, policy_name: _Optional[str] = ..., inference_seconds: _Optional[float] = ..., scalars: _Optional[_Mapping[str, float]] = ...) -> None: ...
+
+class VehicleCommand(_message.Message):
+    __slots__ = ("time_now_us", "turn_indicator")
+    TIME_NOW_US_FIELD_NUMBER: _ClassVar[int]
+    TURN_INDICATOR_FIELD_NUMBER: _ClassVar[int]
+    time_now_us: int
     turn_indicator: TurnIndicator
-    def __init__(self, policy_name: _Optional[str] = ..., inference_seconds: _Optional[float] = ..., scalars: _Optional[_Mapping[str, float]] = ..., turn_indicator: _Optional[_Union[TurnIndicator, str]] = ...) -> None: ...
+    def __init__(self, time_now_us: _Optional[int] = ..., turn_indicator: _Optional[_Union[TurnIndicator, str]] = ...) -> None: ...
+
+class VehicleCommandRequest(_message.Message):
+    __slots__ = ("session_uuid",)
+    SESSION_UUID_FIELD_NUMBER: _ClassVar[int]
+    session_uuid: str
+    def __init__(self, session_uuid: _Optional[str] = ...) -> None: ...
 
 class CarlaDriveSessionInfo(_message.Message):
     __slots__ = ("base", "map_name", "scenario_name", "fixed_delta_us", "policy_timestep_us", "rear_axle_offset_m", "cameras")

@@ -12,6 +12,10 @@
 //   * `egodriver.DriveResponse.DebugInfo.unstructured_debug_info`
 //         -> serialized `carla_driver.v0.CarlaDriveDebugInfo`
 //
+// `CarlaVehicleService` is the one addition beside them: a separate service, on
+// the policy's port, through which a CARLA runtime fetches what the policy
+// commands of the vehicle besides its trajectory (`VehicleCommand`).
+//
 // A driver that ignores those bytes stays fully compatible; a driver that wants
 // CARLA ground truth can parse them.  Upstream messages are imported and
 // composed (never redefined) so field numbers can never drift.
@@ -144,6 +148,18 @@ message LidarSweep {
 // Driver -> runtime payload (carried in DriveResponse.DebugInfo)
 ////////////////////////////////////////////////////////////////////////////////
 
+// Packed into `egodriver.DriveResponse.DebugInfo.unstructured_debug_info`.
+message CarlaDriveDebugInfo {
+  string policy_name = 1;
+  float inference_seconds = 2;
+  // Free-form scalars the policy wants surfaced in the rollout metrics.
+  map<string, double> scalars = 3;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Vehicle command (policy -> runtime, over its own RPC)
+////////////////////////////////////////////////////////////////////////////////
+
 // What a policy asks of the ego's turn indicators. The numbers are
 // `autoware_vehicle_msgs/TurnIndicatorsCommand`'s, so a policy trained on
 // Autoware's recorded signal passes its class through unchanged.
@@ -157,16 +173,27 @@ enum TurnIndicator {
   TURN_INDICATOR_ENABLE_RIGHT = 3;
 }
 
-// Packed into `egodriver.DriveResponse.DebugInfo.unstructured_debug_info`.
-message CarlaDriveDebugInfo {
-  string policy_name = 1;
-  float inference_seconds = 2;
-  // Free-form scalars the policy wants surfaced in the rollout metrics.
-  map<string, double> scalars = 3;
-  // The turn indicators the policy asks for, held until the next response
-  // that sets them. Carried here because the egodriver contract has no field
-  // for them.
-  TurnIndicator turn_indicator = 4;
+// What a policy commands of the vehicle besides its trajectory: the
+// egodriver contract carries only the plan, so a runtime that can act on more
+// asks for it with `CarlaVehicleService.get_vehicle_command` after each drive.
+message VehicleCommand {
+  // `DriveRequest.time_now_us` of the drive that decided this command; 0
+  // before the session's first drive.
+  fixed64 time_now_us = 1;
+  TurnIndicator turn_indicator = 2;
+}
+
+message VehicleCommandRequest {
+  string session_uuid = 1;
+}
+
+// Served beside `egodriver.EgodriverService`, on the same port. A runtime
+// that never calls it loses nothing but the command; a policy server that
+// does not serve it (carla-driver-interface < 2.1) answers UNIMPLEMENTED,
+// which a runtime reads as "no command".
+service CarlaVehicleService {
+  // The command the policy decided with its latest drive in the session.
+  rpc get_vehicle_command(VehicleCommandRequest) returns (VehicleCommand);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

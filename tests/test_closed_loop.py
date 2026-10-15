@@ -16,8 +16,11 @@ from carla_driver_interface.driver import (
 from carla_driver_interface.geometry import Pose, Trajectory
 from carla_driver_interface.policies import ConstantSpeedPolicy, RouteFollowerPolicy
 from carla_driver_interface.protocol import (
+    CarlaVehicleServiceStub,
+    DriveSessionRequest,
     EgodriverServiceStub,
     Empty,
+    VehicleCommandRequest,
     carla_driver_pb2,
     channel_options,
 )
@@ -109,20 +112,43 @@ class _Signals(BaseDriver):
 
 def test_the_turn_indicator_reaches_the_runtime() -> None:
     result = run(_Signals(), steps=4)
-    assert [d.turn_indicator for d in result.debug if d is not None] == [
+    assert [c.turn_indicator for c in result.commands] == [
         carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
         carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
         carla_driver_pb2.TURN_INDICATOR_DISABLE,
         carla_driver_pb2.TURN_INDICATOR_NO_COMMAND,
     ]
+    # Each command names the drive that decided it.
+    assert [c.time_now_us for c in result.commands] == [0, 100_000, 200_000, 300_000]
 
 
 def test_a_policy_that_sets_no_turn_indicator_commands_nothing() -> None:
     result = run(ConstantSpeedPolicy(), steps=2)
     assert all(
-        d is not None and d.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
-        for d in result.debug
+        c.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+        for c in result.commands
     )
+
+
+def test_the_vehicle_command_is_none_before_the_first_drive() -> None:
+    with serving(_Signals(), port=0, host="127.0.0.1") as port:
+        with grpc.insecure_channel(
+            f"127.0.0.1:{port}", options=channel_options()
+        ) as channel:
+            EgodriverServiceStub(channel).start_session(
+                DriveSessionRequest(session_uuid="s"), timeout=10
+            )
+            vehicle = CarlaVehicleServiceStub(channel)
+            command = vehicle.get_vehicle_command(
+                VehicleCommandRequest(session_uuid="s"), timeout=10
+            )
+            with pytest.raises(grpc.RpcError) as error:
+                vehicle.get_vehicle_command(
+                    VehicleCommandRequest(session_uuid="unknown"), timeout=10
+                )
+    assert command.time_now_us == 0
+    assert command.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
+    assert error.value.code() == grpc.StatusCode.NOT_FOUND
 
 
 def test_turn_indicator_values_are_the_wires() -> None:

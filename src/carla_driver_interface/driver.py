@@ -202,7 +202,7 @@ class TurnIndicator(IntEnum):
     """What a policy asks of the ego's turn indicators (``DriveResult.turn_indicator``).
 
     The values are ``autoware_vehicle_msgs/TurnIndicatorsCommand``'s, and the wire's
-    (``carla_driver.v0.TurnIndicator``): a classifier over Autoware's recorded
+    (``carla_driver.v0.TurnIndicator``, in ``VehicleCommand``): a classifier over Autoware's recorded
     DISABLE / LEFT / RIGHT signal maps its class ``i`` to ``TurnIndicator(i + 1)``.
     """
 
@@ -229,9 +229,10 @@ class DriveResult:
     debug_scalars: Dict[str, float] = field(default_factory=dict)
     #: Alternative plans considered, in the rig frame.
     sampled_trajectories_in_rig: List[Trajectory] = field(default_factory=list)
-    #: The turn indicators to show (``CarlaDriveDebugInfo.turn_indicator``), held
-    #: by the runtime until a later result sets them; ``NO_COMMAND`` changes
-    #: nothing.  An upstream alpasim runtime has nowhere to show them.
+    #: The turn indicators to show, held by the runtime until a later result
+    #: sets them; ``NO_COMMAND`` changes nothing.  A CARLA runtime fetches it
+    #: (``CarlaVehicleService.get_vehicle_command``); an upstream alpasim runtime
+    #: has no indicators to show.
     turn_indicator: TurnIndicator = TurnIndicator.NO_COMMAND
 
 

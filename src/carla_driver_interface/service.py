@@ -49,7 +49,6 @@ from .driver import (
     BaseDriver,
     CameraFrame,
     DriveContext,
-    DriveResult,
     LidarFrame,
     SensorFrame,
     SessionState,
@@ -61,6 +60,7 @@ from .protocol import (
     ALPASIM_REV,
     CarlaDriveDebugInfo,
     CarlaRendererData,
+    CarlaVehicleServiceServicer,
     DriveRequest,
     DriveResponse,
     DriveSessionCloseRequest,
@@ -73,6 +73,8 @@ from .protocol import (
     RolloutEgoTrajectory,
     RouteRequest,
     SessionRequestStatus,
+    VehicleCommand,
+    VehicleCommandRequest,
     VersionId,
     carla_driver_pb2,
     pack_debug_info,
@@ -88,8 +90,13 @@ ServiceMode = Literal["carla", "alpasim"]
 SERVICE_MODES: tuple = get_args(ServiceMode)
 
 
-class EgodriverServicer(EgodriverServiceServicer):
-    """Serves one :class:`BaseDriver` over the alpasim egodriver contract."""
+class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
+    """Serves one :class:`BaseDriver` over the alpasim egodriver contract.
+
+    It also serves ``carla_driver.v0.CarlaVehicleService`` on the same sessions:
+    what the policy commands of the vehicle besides its plan
+    (:meth:`get_vehicle_command`), which the egodriver contract cannot carry.
+    """
 
     def __init__(self, driver: BaseDriver, mode: ServiceMode = "carla") -> None:
         if mode not in SERVICE_MODES:
@@ -100,6 +107,8 @@ class EgodriverServicer(EgodriverServiceServicer):
         self._sessions_lock = threading.Lock()
         #: Opened map sets by ``map_id``; a map does not change under its id.
         self._maps: Dict[str, MapFiles] = {}
+        #: The latest drive's vehicle command, by session; under ``_sessions_lock``.
+        self._commands: Dict[str, VehicleCommand] = {}
 
     # -- session lifecycle -----------------------------------------------------
 
@@ -168,6 +177,7 @@ class EgodriverServicer(EgodriverServiceServicer):
     ) -> Empty:
         with self._sessions_lock:
             session = self._sessions.pop(request.session_uuid, None)
+            self._commands.pop(request.session_uuid, None)
         if session is None:
             logger.warning("close_session for unknown session %s", request.session_uuid)
             return Empty()
@@ -299,6 +309,13 @@ class EgodriverServicer(EgodriverServiceServicer):
         with session.lock:
             session.drive_count += 1
             anchor = session.latest_pose()
+        command = VehicleCommand(
+            time_now_us=time_now_us,
+            turn_indicator=carla_driver_pb2.TurnIndicator.Name(result.turn_indicator),
+        )
+        with self._sessions_lock:
+            if request.session_uuid in self._sessions:
+                self._commands[request.session_uuid] = command
 
         # Before the first egomotion observation there is no frame to express a
         # plan in; upstream answers an empty trajectory, which the runtime treats
@@ -319,17 +336,32 @@ class EgodriverServicer(EgodriverServiceServicer):
         return DriveResponse(
             trajectory=trajectory,
             debug_info=DriveResponse.DebugInfo(
-                unstructured_debug_info=self._debug_payload(elapsed, result),
+                unstructured_debug_info=self._debug_payload(
+                    elapsed, result.debug_scalars
+                ),
                 sampled_trajectories=sampled,
             ),
             terminate_session=result.terminate_session,
         )
 
+    # -- CarlaVehicleService ---------------------------------------------------
+
+    def get_vehicle_command(
+        self, request: VehicleCommandRequest, context: grpc.ServicerContext
+    ) -> VehicleCommand:
+        """The command the policy decided with the session's latest drive.
+
+        Before the first drive: no command (``time_now_us`` 0, ``NO_COMMAND``).
+        """
+        self._require_session(request.session_uuid, context)
+        with self._sessions_lock:
+            command = self._commands.get(request.session_uuid)
+        return command if command is not None else VehicleCommand()
+
     # -- helpers ---------------------------------------------------------------
 
-    def _debug_payload(self, elapsed: float, result: DriveResult) -> bytes:
+    def _debug_payload(self, elapsed: float, scalars: Dict[str, float]) -> bytes:
         """``unstructured_debug_info`` in the form this mode's runtime reads."""
-        scalars = result.debug_scalars
         if self._mode == "alpasim":
             # Builtins only, so unpickling it needs nothing from this package.
             return pickle.dumps(
@@ -344,9 +376,6 @@ class EgodriverServicer(EgodriverServiceServicer):
                 policy_name=self._driver.name,
                 inference_seconds=elapsed,
                 scalars=scalars,
-                turn_indicator=carla_driver_pb2.TurnIndicator.Name(
-                    result.turn_indicator
-                ),
             )
         )
 

@@ -51,10 +51,13 @@ PROTO_FILES = (
     "carla_driver/v0/carla_driver.proto",
 )
 
-#: Only ``egodriver`` declares a service this package talks to, so service stubs are
-#: generated for it alone: ``common`` has no service and ``sensorsim``'s is
-#: implemented by alpasim's renderer, which the CARLA runtime replaces.
-GRPC_SERVICE_PROTO = "alpasim_grpc/v0/egodriver.proto"
+#: The services this package talks to, ``egodriver`` and the CARLA extension's
+#: ``CarlaVehicleService``, get stubs: ``common`` has no service and ``sensorsim``'s
+#: is implemented by alpasim's renderer, which the CARLA runtime replaces.
+GRPC_SERVICE_PROTOS = (
+    "alpasim_grpc/v0/egodriver.proto",
+    "carla_driver/v0/carla_driver.proto",
+)
 
 _REGENERATE = "uv run python scripts/compile_protos.py"
 
@@ -105,7 +108,7 @@ def _generate(destination: Path) -> None:
                 f"--pyi_out={raw}",
                 *PROTO_FILES,
             ],
-            ["protoc", *include, f"--grpc_python_out={raw}", GRPC_SERVICE_PROTO],
+            ["protoc", *include, f"--grpc_python_out={raw}", *GRPC_SERVICE_PROTOS],
         ]
         for args in passes:
             code = protoc.main(args)

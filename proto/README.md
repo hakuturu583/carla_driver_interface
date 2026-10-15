@@ -18,8 +18,10 @@ Both are Apache-2.0; see `LICENSE.alpasim`.
 has always defined, carried over from 0.1.0 and extended in place. `CarlaRendererData`
 fields 9–12 (`lidar`, `map_id`, `traffic_lights`, field 9 reserved) and the `LidarSweep`,
 `TrafficLight` and `StopPoint` messages carry over [#12](https://github.com/hakuturu583/carla_driver_interface/pull/12)'s
-`driver_extension.proto` with the same field numbers. `CarlaDriveDebugInfo.turn_indicator` (field 4) and the
-`TurnIndicator` enum carry a policy's turn-indicator command.
+`driver_extension.proto` with the same field numbers. `CarlaVehicleService` (served beside `egodriver.EgodriverService`), with
+`VehicleCommand` and the `TurnIndicator` enum, carries what a policy commands of the
+vehicle besides its plan -- its turn indicators -- which the egodriver contract has no
+field for; it is not an alpasim service, and an alpasim runtime never calls it.
 
 ## Why vendor instead of depend
 

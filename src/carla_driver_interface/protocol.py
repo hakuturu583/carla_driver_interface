@@ -28,6 +28,7 @@ from numpy.typing import NDArray
 # directly (a runtime building requests field by field, say).
 from ._proto import (
     carla_driver_pb2,
+    carla_driver_pb2_grpc,
     common_pb2,
     egodriver_pb2,
     egodriver_pb2_grpc,
@@ -82,6 +83,14 @@ LidarSweep = carla_driver_pb2.LidarSweep
 StopPoint = carla_driver_pb2.StopPoint
 TrafficLight = carla_driver_pb2.TrafficLight
 TrafficLightState = carla_driver_pb2.TrafficLightState
+VehicleCommand = carla_driver_pb2.VehicleCommand
+VehicleCommandRequest = carla_driver_pb2.VehicleCommandRequest
+
+CarlaVehicleServiceServicer = carla_driver_pb2_grpc.CarlaVehicleServiceServicer
+CarlaVehicleServiceStub = carla_driver_pb2_grpc.CarlaVehicleServiceStub
+add_CarlaVehicleServiceServicer_to_server = (
+    carla_driver_pb2_grpc.add_CarlaVehicleServiceServicer_to_server
+)
 
 #: NVlabs/alpasim revision the contract was vendored from (proto/README.md).
 ALPASIM_REV = "68709245a5dc0f2eda4f8cb2c3aa8cbdfa913043"

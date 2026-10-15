@@ -12,7 +12,11 @@ from typing import Iterator, Tuple
 import grpc
 
 from .driver import BaseDriver
-from .protocol import add_EgodriverServiceServicer_to_server, channel_options
+from .protocol import (
+    add_CarlaVehicleServiceServicer_to_server,
+    add_EgodriverServiceServicer_to_server,
+    channel_options,
+)
 from .service import EgodriverServicer, ServiceMode
 
 logger = logging.getLogger(__name__)
@@ -36,7 +40,10 @@ def build_server(
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=max_workers), options=channel_options()
     )
-    add_EgodriverServiceServicer_to_server(EgodriverServicer(driver, mode), server)
+    servicer = EgodriverServicer(driver, mode)
+    add_EgodriverServiceServicer_to_server(servicer, server)
+    # The vehicle command the egodriver contract has no field for.
+    add_CarlaVehicleServiceServicer_to_server(servicer, server)
     bound_port = server.add_insecure_port(f"{host}:{port}")
     if bound_port == 0:
         raise RuntimeError(f"failed to bind {host}:{port}")

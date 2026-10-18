@@ -56,7 +56,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     serve = commands.add_parser("serve", help="serve a policy over gRPC")
     _add_policy_arguments(serve, os.environ.get(POLICY_ENV, "route_follower"))
-    serve.add_argument("--host", default="0.0.0.0")
+    serve.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="address to bind, or a Unix socket (unix:///path/policy.sock; --port unused)",
+    )
     serve.add_argument("--port", type=int, default=50051)
     serve.add_argument("--cruise-speed", type=float, default=None, help="m/s")
     serve.add_argument(
@@ -76,7 +80,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     demo = commands.add_parser(
         "demo", help="drive a policy server through the CARLA-free fake loop"
     )
-    demo.add_argument("--driver", default="localhost:50051", help="policy host:port")
+    demo.add_argument(
+        "--driver", default="localhost:50051", help="policy host:port, or unix:///path"
+    )
     demo.add_argument("--steps", type=int, default=100)
     demo.add_argument("--step", type=float, default=0.1, help="seconds per drive call")
     demo.add_argument("--camera-width", type=int, default=FakeCamera.width)

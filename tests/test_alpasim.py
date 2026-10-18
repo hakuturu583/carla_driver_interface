@@ -7,11 +7,11 @@ import math
 import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import yaml
+from conftest import Transport
 
 from carla_driver_interface import cli, protocol
 from carla_driver_interface.alpasim import (
@@ -34,6 +34,7 @@ from carla_driver_interface.protocol import (
     CarlaRendererData,
     DriveRequest,
     DriveSessionRequest,
+    EgodriverServiceStub,
     RolloutEgoTrajectory,
 )
 from carla_driver_interface.service import EgodriverServicer
@@ -52,41 +53,47 @@ class _Records(BaseDriver):
         return DriveResult(trajectory_in_rig=plan, debug_scalars={"speed": 3.0})
 
 
-def _drive_once(mode: str, renderer_data: bytes):
+def _drive_once(transport: Transport, mode: str, renderer_data: bytes):
+    """One drive as an upstream alpasim runtime makes it: no contract metadata."""
     policy = _Records()
-    servicer = EgodriverServicer(policy, mode)  # type: ignore[arg-type]
-    context = MagicMock()
-    servicer.start_session(DriveSessionRequest(session_uuid="s"), context)
-    ego = RolloutEgoTrajectory(session_uuid="s")
-    ego.trajectory.CopyFrom(Trajectory([0], [Pose.identity()]).to_proto())
-    servicer.submit_egomotion_observation(ego, context)
-    response = servicer.drive(
-        DriveRequest(session_uuid="s", time_now_us=0, renderer_data=renderer_data),
-        context,
-    )
-    context.abort.assert_not_called()
+    with transport.serve(policy, mode=mode) as channel:
+        stub = EgodriverServiceStub(channel)
+        stub.start_session(DriveSessionRequest(session_uuid="s"), timeout=10)
+        ego = RolloutEgoTrajectory(session_uuid="s")
+        ego.trajectory.CopyFrom(Trajectory([0], [Pose.identity()]).to_proto())
+        stub.submit_egomotion_observation(ego, timeout=10)
+        response = stub.drive(
+            DriveRequest(session_uuid="s", time_now_us=0, renderer_data=renderer_data),
+            timeout=10,
+        )
     return policy, response
 
 
 _CARLA_PAYLOAD = protocol.pack_renderer_data(CarlaRendererData(map_id="Town10HD_Opt"))
 
 
-def test_carla_mode_reads_ground_truth_and_answers_a_carla_debug_message() -> None:
-    policy, response = _drive_once("carla", _CARLA_PAYLOAD)
+def test_carla_mode_reads_ground_truth_and_answers_a_carla_debug_message(
+    transport: Transport,
+) -> None:
+    policy, response = _drive_once(transport, "carla", _CARLA_PAYLOAD)
     assert policy.renderer_data[0] is not None
     assert policy.renderer_data[0].map_id == "Town10HD_Opt"
     debug = protocol.unpack_debug_info(response.debug_info.unstructured_debug_info)
     assert debug is not None and debug.policy_name == "records"
 
 
-def test_alpasim_mode_never_reads_the_renderer_payload_as_carla_ground_truth() -> None:
+def test_alpasim_mode_never_reads_the_renderer_payload_as_carla_ground_truth(
+    transport: Transport,
+) -> None:
     # Even bytes that do parse as CarlaRendererData are alpasim's renderer's own.
-    policy, _ = _drive_once("alpasim", _CARLA_PAYLOAD)
+    policy, _ = _drive_once(transport, "alpasim", _CARLA_PAYLOAD)
     assert policy.renderer_data == [None]
 
 
-def test_alpasim_mode_answers_the_pickled_dict_alpasim_evaluation_reads() -> None:
-    _, response = _drive_once("alpasim", b"")
+def test_alpasim_mode_answers_the_pickled_dict_alpasim_evaluation_reads(
+    transport: Transport,
+) -> None:
+    _, response = _drive_once(transport, "alpasim", b"")
     extra = pickle.loads(response.debug_info.unstructured_debug_info)
     assert extra["policy_name"] == "records"
     assert extra["scalars"] == {"speed": 3.0}

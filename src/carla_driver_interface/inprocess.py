@@ -540,7 +540,9 @@ class InProcessChannel(grpc.Channel):
         invocation = _metadata(metadata)
         started = time.time()
         deadline = None if timeout is None else started + timeout
-        if timeout is not None and timeout < 0:
+        if timeout is not None and timeout <= 0:
+            # grpc fails a call whose deadline has already passed (timeout=0 too)
+            # before it reaches the server.
             raise InProcessRpcError(
                 grpc.StatusCode.DEADLINE_EXCEEDED, "Deadline Exceeded"
             )
@@ -564,8 +566,17 @@ class InProcessChannel(grpc.Channel):
                 f"{method} is not unary-unary; the in-process channel serves unary calls only"
             )
 
-        response_bytes = self._serve(handler, request_bytes, invocation, deadline)
-        if deadline is not None and timeout and time.time() > deadline:
+        try:
+            response_bytes = self._serve(handler, request_bytes, invocation, deadline)
+        except InProcessRpcError:
+            # Over the wire the client has given up by the time a late abort is
+            # sent, so it sees DEADLINE_EXCEEDED, not the servicer's status.
+            if deadline is not None and time.time() > deadline:
+                raise InProcessRpcError(
+                    grpc.StatusCode.DEADLINE_EXCEEDED, "Deadline Exceeded"
+                ) from None
+            raise
+        if deadline is not None and time.time() > deadline:
             # The servicer ran to the end on this thread; the client gave up.
             raise InProcessRpcError(
                 grpc.StatusCode.DEADLINE_EXCEEDED, "Deadline Exceeded"

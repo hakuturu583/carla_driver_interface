@@ -253,6 +253,10 @@ class _Edges(EgodriverServiceServicer):
         if request.session_uuid == "slow":
             time.sleep(0.3)
             return DriveResponse()
+        if request.session_uuid == "slow-abort":
+            # Aborts after the client's deadline: the client sees the deadline.
+            time.sleep(0.3)
+            context.abort(grpc.StatusCode.NOT_FOUND, "too late")
         try:
             context.abort(grpc.StatusCode.PERMISSION_DENIED, "swallowed")
         except Exception:  # noqa: BLE001 - the point: the abort stands
@@ -278,6 +282,8 @@ def _edges(channel: grpc.Channel) -> None:
         lambda: stub.drive(DriveRequest(session_uuid="slow"), timeout=0.05),
         lambda: stub.get_version(Empty(), timeout=-1),
         lambda: stub.get_version(Empty(), metadata=(("Upper", "1"),)),
+        lambda: stub.get_version(Empty(), timeout=0),
+        lambda: stub.drive(DriveRequest(session_uuid="slow-abort"), timeout=0.05),
     ):
         _try(call)
 
@@ -333,6 +339,14 @@ def test_servicer_context_semantics_are_grpcs() -> None:
         "Deadline Exceeded",
     )
     assert results[10][:3] == ("error", grpc.StatusCode.INTERNAL, "Invalid metadata")
+    # A deadline that has already passed, and one that passes before the
+    # servicer's late abort, both read as the deadline (#20 review).
+    for late in results[11:13]:
+        assert late[:3] == (
+            "error",
+            grpc.StatusCode.DEADLINE_EXCEEDED,
+            "Deadline Exceeded",
+        )
 
 
 def test_metadata_grpc_refuses_before_sending_is_refused_alike(

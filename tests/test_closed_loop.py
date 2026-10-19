@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from concurrent import futures
-
 import grpc
 import numpy as np
 import pytest
+from conftest import Transport
 
 from carla_driver_interface.driver import (
     BaseDriver,
@@ -25,21 +24,21 @@ from carla_driver_interface.protocol import (
     VehicleCommandRequest,
     add_EgodriverServiceServicer_to_server,
     carla_driver_pb2,
-    channel_options,
 )
-from carla_driver_interface.server import serving
 from carla_driver_interface.service import EgodriverServicer
 from carla_driver_interface.testing import FakeCamera, FakeLoop, render_road
 
 
-def run(policy: BaseDriver, steps: int = 50, **loop_kwargs: object):
-    with serving(policy, port=0, host="127.0.0.1") as port:
-        with FakeLoop(f"127.0.0.1:{port}", **loop_kwargs) as loop:  # type: ignore[arg-type]
+def run(
+    transport: Transport, policy: BaseDriver, steps: int = 50, **loop_kwargs: object
+):
+    with transport.serve(policy) as channel:
+        with FakeLoop(channel, **loop_kwargs) as loop:  # type: ignore[arg-type]
             return loop.run(steps)
 
 
-def test_constant_speed_drives_straight_ahead() -> None:
-    result = run(ConstantSpeedPolicy(cruise_speed_mps=5.0), steps=30)
+def test_constant_speed_drives_straight_ahead(transport: Transport) -> None:
+    result = run(transport, ConstantSpeedPolicy(cruise_speed_mps=5.0), steps=30)
     assert result.steps == 30 and not result.terminated_by_policy
     # Perfect tracking of a 5 m/s plan: 0.5 m per 0.1 s step.
     np.testing.assert_allclose(np.diff(result.ego.positions[:, 0])[1:], 0.5, atol=1e-6)
@@ -49,8 +48,9 @@ def test_constant_speed_drives_straight_ahead() -> None:
     )
 
 
-def test_route_follower_returns_to_the_lane_centre() -> None:
+def test_route_follower_returns_to_the_lane_centre(transport: Transport) -> None:
     result = run(
+        transport,
         RouteFollowerPolicy(cruise_speed_mps=8.0),
         steps=60,
         initial_lateral_offset_m=1.0,
@@ -79,10 +79,10 @@ class _Recorder(BaseDriver):
         )
 
 
-def test_observations_reach_the_policy() -> None:
+def test_observations_reach_the_policy(transport: Transport) -> None:
     recorder = _Recorder()
     camera = FakeCamera(width=160, height=90)
-    result = run(recorder, steps=10, cameras=[camera], initial_speed_mps=4.0)
+    result = run(transport, recorder, steps=10, cameras=[camera], initial_speed_mps=4.0)
     assert result.terminated_by_policy and result.steps == 3
     (session,) = recorder.sessions
     assert list(session.cameras) == ["camera_front"]
@@ -114,8 +114,8 @@ class _Signals(BaseDriver):
         )
 
 
-def test_the_turn_indicator_reaches_the_runtime() -> None:
-    result = run(_Signals(), steps=4)
+def test_the_turn_indicator_reaches_the_runtime(transport: Transport) -> None:
+    result = run(transport, _Signals(), steps=4)
     assert [c.turn_indicator for c in result.commands] == [
         carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
         carla_driver_pb2.TURN_INDICATOR_ENABLE_LEFT,
@@ -126,33 +126,35 @@ def test_the_turn_indicator_reaches_the_runtime() -> None:
     assert [c.time_now_us for c in result.commands] == [0, 100_000, 200_000, 300_000]
 
 
-def test_a_policy_that_sets_no_turn_indicator_commands_nothing() -> None:
-    result = run(ConstantSpeedPolicy(), steps=2)
+def test_a_policy_that_sets_no_turn_indicator_commands_nothing(
+    transport: Transport,
+) -> None:
+    result = run(transport, ConstantSpeedPolicy(), steps=2)
     assert all(
         c.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
         for c in result.commands
     )
 
 
-def test_the_vehicle_command_is_none_before_the_first_drive() -> None:
-    with serving(_Signals(), port=0, host="127.0.0.1") as port:
-        with grpc.insecure_channel(
-            f"127.0.0.1:{port}", options=channel_options()
-        ) as channel:
-            EgodriverServiceStub(channel).start_session(
-                DriveSessionRequest(session_uuid="s"), timeout=10
+def test_the_vehicle_command_is_none_before_the_first_drive(
+    transport: Transport,
+) -> None:
+    with transport.serve(_Signals()) as channel:
+        EgodriverServiceStub(channel).start_session(
+            DriveSessionRequest(session_uuid="s"), timeout=10
+        )
+        vehicle = CarlaVehicleServiceStub(channel)
+        command = vehicle.get_vehicle_command(
+            VehicleCommandRequest(session_uuid="s"), timeout=10
+        )
+        with pytest.raises(grpc.RpcError) as error:
+            vehicle.get_vehicle_command(
+                VehicleCommandRequest(session_uuid="unknown"), timeout=10
             )
-            vehicle = CarlaVehicleServiceStub(channel)
-            command = vehicle.get_vehicle_command(
-                VehicleCommandRequest(session_uuid="s"), timeout=10
-            )
-            with pytest.raises(grpc.RpcError) as error:
-                vehicle.get_vehicle_command(
-                    VehicleCommandRequest(session_uuid="unknown"), timeout=10
-                )
     assert command.time_now_us == 0
     assert command.turn_indicator == carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
     assert error.value.code() == grpc.StatusCode.NOT_FOUND
+    assert error.value.details() == "Unknown session unknown"
 
 
 class _BadSignal(BaseDriver):
@@ -166,8 +168,10 @@ class _BadSignal(BaseDriver):
         return DriveResult(trajectory_in_rig=plan, turn_indicator=4)  # type: ignore[arg-type]
 
 
-def test_a_bad_turn_indicator_costs_the_policy_nothing_but_the_command() -> None:
-    result = run(_BadSignal(), steps=3)
+def test_a_bad_turn_indicator_costs_the_policy_nothing_but_the_command(
+    transport: Transport,
+) -> None:
+    result = run(transport, _BadSignal(), steps=3)
     assert result.steps == 3
     assert result.ego.positions[-1, 0] > 0.0  # the plans still arrived
     assert all(
@@ -176,16 +180,23 @@ def test_a_bad_turn_indicator_costs_the_policy_nothing_but_the_command() -> None
     )
 
 
-def test_fake_loop_reads_a_server_without_the_vehicle_service_as_no_command() -> None:
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    add_EgodriverServiceServicer_to_server(EgodriverServicer(_Signals()), server)
-    port = server.add_insecure_port("127.0.0.1:0")
-    server.start()
-    try:
-        with FakeLoop(f"127.0.0.1:{port}") as loop:
+def test_fake_loop_reads_a_server_without_the_vehicle_service_as_no_command(
+    transport: Transport,
+) -> None:
+    servicer = EgodriverServicer(_Signals())
+    register = lambda server: add_EgodriverServiceServicer_to_server(  # noqa: E731
+        servicer, server
+    )
+    with transport.serve_servicers(register) as channel:
+        with pytest.raises(grpc.RpcError) as error:
+            CarlaVehicleServiceStub(channel).get_vehicle_command(
+                VehicleCommandRequest(session_uuid="s"), timeout=10
+            )
+        with FakeLoop(channel) as loop:
             result = loop.run(2)
-    finally:
-        server.stop(grace=None)
+    # What a runtime reads as "carla-driver-interface < 2.1".
+    assert error.value.code() == grpc.StatusCode.UNIMPLEMENTED
+    assert error.value.details() == "Method not found!"
     assert [c.turn_indicator for c in result.commands] == [
         carla_driver_pb2.TURN_INDICATOR_NO_COMMAND
     ] * 2
@@ -208,19 +219,16 @@ class _Refuses(BaseDriver):
         raise AssertionError
 
 
-def test_a_policy_refusing_a_session_is_reported() -> None:
+def test_a_policy_refusing_a_session_is_reported(transport: Transport) -> None:
     with pytest.raises(grpc.RpcError) as error:
-        run(_Refuses(), steps=1)
+        run(transport, _Refuses(), steps=1)
     assert error.value.code() == grpc.StatusCode.FAILED_PRECONDITION
-    assert "nope" in error.value.details()
+    assert error.value.details() == "refuses: needs a camera called 'nope'"
 
 
-def test_version_reports_the_policy() -> None:
-    with serving(ConstantSpeedPolicy(), port=0, host="127.0.0.1") as port:
-        with grpc.insecure_channel(
-            f"127.0.0.1:{port}", options=channel_options()
-        ) as channel:
-            version = EgodriverServiceStub(channel).get_version(Empty())
+def test_version_reports_the_policy(transport: Transport) -> None:
+    with transport.serve(ConstantSpeedPolicy()) as channel:
+        version = EgodriverServiceStub(channel).get_version(Empty())
     assert version.version_id.startswith("constant_speed-carla-driver-interface-")
     assert (version.grpc_api_version.major, version.grpc_api_version.minor) == (0, 55)
 

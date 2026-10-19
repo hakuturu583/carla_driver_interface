@@ -88,6 +88,35 @@ or, in a test, `FakeLoop("localhost:50051", [FakeCamera()])` from
 `LoopResult`). The ego follows the returned plan exactly, so what is tested is the policy
 and the wire, not a controller.
 
+## Serving on a Unix socket, or in the runtime's own process
+
+A server binds a Unix domain socket when its host names one: `serve --host
+unix:///run/policy.sock` (`build_server(policy, host="unix:///run/policy.sock")`; the
+port is unused). A client dials the same address.
+
+A runtime that runs the policy in its own process can skip the socket altogether:
+
+```python
+from carla_driver_interface.inprocess import in_process_channel
+from carla_driver_interface.protocol import EgodriverServiceStub
+
+# A grpc.Channel; mode="alpasim", as on a server.
+channel = in_process_channel(MyPolicy())
+# The generated stubs, unchanged.
+stub = EgodriverServiceStub(channel)
+```
+
+`InProcessChannel` keeps the contract byte for byte: each request is serialized and parsed
+by the servicer's own deserializer, each response likewise, so both sides see the bytes
+the wire would carry. The servicer is the same `EgodriverServicer`, with a context that
+does what grpc's does (`abort`, `set_code`/`set_details`, an exception as `UNKNOWN`,
+invocation, initial and trailing metadata -- the contract revision is negotiated through
+them), and a failed call is a `grpc.RpcError` with the code and details a server's would
+carry. The test suite runs every wire test over TCP, a Unix socket and this channel and
+compares what the client sees, errors included. Only the socket's own behaviour is
+missing: a call runs on the calling thread, so a deadline is reported, as
+`DEADLINE_EXCEEDED`, when the call returns rather than cutting it short.
+
 ## Running a policy in alpasim
 
 alpasim runs its driver as a container its wizard starts, and its runtime drives it over

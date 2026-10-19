@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from concurrent import futures
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import grpc
 import numpy as np
 import pytest
+from conftest import Transport
 
 from carla_driver_interface.contract import (
     CONTRACT_REVISION,
@@ -35,7 +35,6 @@ from carla_driver_interface.protocol import (
     VersionId,
     add_EgodriverServiceServicer_to_server,
 )
-from carla_driver_interface.server import serving
 from carla_driver_interface.testing import FakeCamera, FakeLoop
 
 #: Pitched down and yawed left, so a frame mix-up cannot pass by symmetry.
@@ -70,19 +69,18 @@ class _Cameras(BaseDriver):
 
 
 def _start(
-    port: int, camera: AvailableCamera, revision: Optional[int]
+    channel: grpc.Channel, camera: AvailableCamera, revision: Optional[int]
 ) -> grpc.RpcError | None:
     """``start_session`` as a client of *revision* sends it (``None``: declares none)."""
     request = DriveSessionRequest(session_uuid="s")
     request.rollout_spec.vehicle.available_cameras.append(camera)
     metadata = None if revision is None else contract_metadata(revision)
-    with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
-        try:
-            EgodriverServiceStub(channel).start_session(
-                request, timeout=10, metadata=metadata
-            )
-        except grpc.RpcError as error:
-            return error
+    try:
+        EgodriverServiceStub(channel).start_session(
+            request, timeout=10, metadata=metadata
+        )
+    except grpc.RpcError as error:
+        return error
     return None
 
 
@@ -97,10 +95,10 @@ def test_the_body_and_optical_frames_differ_by_a_fixed_rotation() -> None:
     assert np.allclose(axes.apply([0, 1, 0]), [0, 0, -1])
 
 
-def test_this_release_hands_a_policy_the_optical_frame() -> None:
+def test_this_release_hands_a_policy_the_optical_frame(transport: Transport) -> None:
     policy = _Cameras()
-    with serving(policy, port=0, host="127.0.0.1") as port:
-        with FakeLoop(f"127.0.0.1:{port}", [CAMERA]) as loop:
+    with transport.serve(policy) as channel:
+        with FakeLoop(channel, [CAMERA]) as loop:
             loop.run(1)
     assert _same(policy.pose(), OPTICAL)
 
@@ -118,29 +116,40 @@ def test_this_release_hands_a_policy_the_optical_frame() -> None:
     ],
 )
 def test_every_client_revision_reaches_the_policy_as_the_optical_frame(
-    mode: str, revision: Optional[int], declared: Pose
+    mode: str, revision: Optional[int], declared: Pose, transport: Transport
 ) -> None:
     camera = CAMERA.available_camera()
     camera.rig_to_camera.CopyFrom(declared.to_proto())
     policy = _Cameras()
-    with serving(policy, port=0, host="127.0.0.1", mode=mode) as port:  # type: ignore[arg-type]
-        assert _start(port, camera, revision) is None
+    with transport.serve(policy, mode=mode) as channel:
+        assert _start(channel, camera, revision) is None
     assert _same(policy.pose(), OPTICAL)
 
 
-def test_a_revision_this_release_does_not_know_is_refused() -> None:
-    with serving(_Cameras(), port=0, host="127.0.0.1") as port:
-        error = _start(port, CAMERA.available_camera(), CONTRACT_REVISION + 1)
+def test_a_revision_this_release_does_not_know_is_refused(transport: Transport) -> None:
+    with transport.serve(_Cameras()) as channel:
+        error = _start(channel, CAMERA.available_camera(), CONTRACT_REVISION + 1)
     assert error is not None
     assert error.code() == grpc.StatusCode.FAILED_PRECONDITION
-    assert "revision" in (error.details() or "")
+    # The servicer's abort, word for word, whatever carried it.
+    assert error.details() == (
+        f"contract revision {CONTRACT_REVISION + 1} is not one of (1, 2)"
+    )
 
 
-def test_the_server_declares_its_revision() -> None:
-    with serving(_Cameras(), port=0, host="127.0.0.1") as port:
-        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
-            _, revision = negotiate(EgodriverServiceStub(channel), timeout=10)
+def test_the_server_declares_its_revision(transport: Transport) -> None:
+    with transport.serve(_Cameras()) as channel:
+        version, call = EgodriverServiceStub(channel).get_version.with_call(
+            Empty(), timeout=10
+        )
+        _, revision = negotiate(EgodriverServiceStub(channel), timeout=10)
     assert revision == CONTRACT_REVISION
+    # Exactly the one entry, as the server sends it.
+    assert [tuple(m) for m in call.initial_metadata()] == [
+        (METADATA_KEY, str(CONTRACT_REVISION))
+    ]
+    assert tuple(call.trailing_metadata() or ()) == ()
+    assert call.code() == grpc.StatusCode.OK
 
 
 class _LegacyServer(EgodriverServiceServicer):
@@ -150,20 +159,13 @@ class _LegacyServer(EgodriverServiceServicer):
         return VersionId(version_id="legacy-carla-driver-interface-1.1.0")
 
 
-@pytest.fixture
-def legacy_server() -> Iterator[int]:
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    add_EgodriverServiceServicer_to_server(_LegacyServer(), server)
-    port = server.add_insecure_port("127.0.0.1:0")
-    server.start()
-    yield port
-    server.stop(grace=None)
-
-
 def test_a_server_that_declares_nothing_gets_the_camera_body(
-    legacy_server: int,
+    transport: Transport,
 ) -> None:
-    with grpc.insecure_channel(f"127.0.0.1:{legacy_server}") as channel:
+    register = lambda server: add_EgodriverServiceServicer_to_server(  # noqa: E731
+        _LegacyServer(), server
+    )
+    with transport.serve_servicers(register) as channel:
         version, revision = negotiate(EgodriverServiceStub(channel), timeout=10)
     assert version.version_id.startswith("legacy")
     assert revision == LEGACY_REVISION

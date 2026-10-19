@@ -339,14 +339,15 @@ def test_servicer_context_semantics_are_grpcs() -> None:
         "Deadline Exceeded",
     )
     assert results[10][:3] == ("error", grpc.StatusCode.INTERNAL, "Invalid metadata")
-    # A deadline that has already passed, and one that passes before the
-    # servicer's late abort, both read as the deadline (#20 review).
-    for late in results[11:13]:
-        assert late[:3] == (
-            "error",
-            grpc.StatusCode.DEADLINE_EXCEEDED,
-            "Deadline Exceeded",
-        )
+    # timeout=0 is no deadline to grpc: the call is served like the first one.
+    assert results[11][:3] == results[0][:3]
+    # A deadline that passes before the servicer's late abort reads as the
+    # deadline, not the late status.
+    assert results[12][:3] == (
+        "error",
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        "Deadline Exceeded",
+    )
 
 
 def test_metadata_grpc_refuses_before_sending_is_refused_alike(

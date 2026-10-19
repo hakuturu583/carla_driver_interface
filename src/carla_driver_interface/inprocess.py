@@ -539,10 +539,9 @@ class InProcessChannel(grpc.Channel):
             raise ValueError("Cannot invoke RPC on closed channel!")
         invocation = _metadata(metadata)
         started = time.time()
-        deadline = None if timeout is None else started + timeout
-        if timeout is not None and timeout <= 0:
-            # grpc fails a call whose deadline has already passed (timeout=0 too)
-            # before it reaches the server.
+        # grpc's Python client reads timeout=0 as no deadline at all.
+        deadline = started + timeout if timeout else None
+        if timeout is not None and timeout < 0:
             raise InProcessRpcError(
                 grpc.StatusCode.DEADLINE_EXCEEDED, "Deadline Exceeded"
             )

@@ -100,8 +100,10 @@ A runtime that runs the policy in its own process can skip the socket altogether
 from carla_driver_interface.inprocess import in_process_channel
 from carla_driver_interface.protocol import EgodriverServiceStub
 
-channel = in_process_channel(MyPolicy())  # a grpc.Channel; mode="alpasim" as on a server
-stub = EgodriverServiceStub(channel)      # the generated stubs, unchanged
+# A grpc.Channel; mode="alpasim", as on a server.
+channel = in_process_channel(MyPolicy())
+# The generated stubs, unchanged.
+stub = EgodriverServiceStub(channel)
 ```
 
 `InProcessChannel` keeps the contract byte for byte: each request is serialized and parsed

@@ -57,8 +57,10 @@ Every sensor reaches a policy the same way: as a frame in `session.frame_history
 Beyond alpasim's cameras, a policy run by autoware_carla_scenario gets LiDAR sweeps (rig
 frame) that way and, with `map_dir` set to its copy of the runtime's `driver.map_dir`, the
 world's map as files (`ctx.map`) and every traffic light resolved into that map's own
-elements (`ctx.stop_lines()`, `carla_driver_interface.hdmap`). CARLA ground truth arrives
-in `ctx.renderer_data` (`None` when an alpasim runtime drives the policy).
+elements (`ctx.stop_lines()`, `carla_driver_interface.hdmap`). That holds for a Lanelet2
+map the runtime was given rather than converted (`driver.lanelet2_path`) too: its lights are
+found on the map, as the first traffic-light element on or ahead of each stop point. CARLA
+ground truth arrives in `ctx.renderer_data` (`None` when an alpasim runtime drives the policy).
 
 A policy can also work the ego's turn indicators: `DriveResult(..., turn_indicator=TurnIndicator.ENABLE_LEFT)`
 (`carla_driver_interface.driver.TurnIndicator`). The values are Autoware's

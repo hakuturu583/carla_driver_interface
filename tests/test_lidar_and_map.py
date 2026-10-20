@@ -192,6 +192,139 @@ def test_stop_lines_need_a_map_and_lights(tmp_path: Path) -> None:
     assert stop.lane_ids == ("100",)
 
 
+def _write_given_set(
+    directory: Path, light_on: str = "junction", approach_m: float = 10.0
+) -> Path:
+    """A set whose Lanelet2 map was given, not converted: an empty trace.
+
+    Lanelet 100 runs x 0 -> ``approach_m`` (y -3 .. 0) into the junction
+    lanelet 110 (10 m on); traffic light 200 (refers to way 300) hangs off
+    ``light_on``.
+    Lanelet 120, alongside 100 (y 0 .. 3), leads nowhere with a light.
+    """
+    directory.mkdir(parents=True)
+    a, j = approach_m, approach_m + 10
+    nodes = {
+        1: (0, 0),
+        2: (a, 0),
+        3: (j, 0),
+        4: (0, -3),
+        5: (a, -3),
+        6: (j, -3),
+        7: (0, 3),
+        8: (a, 3),
+        9: (a, 5),
+        10: (a, 6),
+    }
+    ways = {
+        101: [1, 2],
+        102: [4, 5],
+        111: [2, 3],
+        112: [5, 6],
+        121: [7, 8],
+        300: [9, 10],
+    }
+    carrier = {"approach": 100, "junction": 110}[light_on]
+    lanelets = {100: (101, 102), 110: (111, 112), 120: (121, 101)}
+    osm = ["<osm>"]
+    osm += [
+        f'<node id="{i}" lat="0" lon="0"><tag k="local_x" v="{x}"/>'
+        f'<tag k="local_y" v="{y}"/></node>'
+        for i, (x, y) in nodes.items()
+    ]
+    osm += [
+        f'<way id="{i}">' + "".join(f'<nd ref="{n}"/>' for n in refs) + "</way>"
+        for i, refs in ways.items()
+    ]
+    for i, (left, right) in lanelets.items():
+        rule = (
+            '<member type="relation" ref="200" role="regulatory_element"/>'
+            if i == carrier
+            else ""
+        )
+        osm.append(
+            f'<relation id="{i}"><member type="way" ref="{left}" role="left"/>'
+            f'<member type="way" ref="{right}" role="right"/>{rule}'
+            '<tag k="type" v="lanelet"/></relation>'
+        )
+    osm.append(
+        '<relation id="200"><member type="way" ref="300" role="refers"/>'
+        '<tag k="type" v="regulatory_element"/><tag k="subtype" v="traffic_light"/>'
+        "</relation></osm>"
+    )
+    files = {
+        "manifest.json": {
+            "map_id": "Town-000000000000",
+            "map_name": "Town",
+            "source": "map.xodr",
+            "ir": "map.ir.json",
+            "read_trace": "map.roadgen.xodr.read.trace.json",
+            "formats": {
+                "lanelet2": {
+                    "path": "lanelet2_map.osm",
+                    "trace": "lanelet2_map.osm.trace.json",
+                    "provided": True,
+                }
+            },
+        },
+        "map.ir.json": {},
+        "map.roadgen.xodr.read.trace.json": {"links": []},
+        "lanelet2_map.osm.trace.json": {"links": []},
+    }
+    for name, content in files.items():
+        (directory / name).write_text(json.dumps(content))
+    (directory / "map.xodr").write_text("<OpenDRIVE/>")
+    (directory / "lanelet2_map.osm").write_text("".join(osm))
+    return directory
+
+
+def _light_at(x: float, y: float) -> TrafficLight:
+    light = _light()
+    light.stop_points[0].position_local.x = x
+    light.stop_points[0].position_local.y = y
+    return light
+
+
+@pytest.mark.parametrize("light_on", ["junction", "approach"])
+def test_a_given_lanelet2_finds_the_light_ahead_of_its_stop_point(
+    tmp_path: Path, light_on: str
+) -> None:
+    map_files = MapFiles(_write_given_set(tmp_path / "set", light_on))
+    [stop] = map_files.stop_lines([_light_at(8.0, -1.5)])
+
+    assert stop.traffic_light_id == "5"
+    assert stop.position_local.tolist() == [8.0, -1.5, 0.0]
+    assert stop.lane_ids == ("100",)
+    assert stop.rule_ids == ("200",)
+    assert stop.light_ids == ("300",)
+    # Asked again, every step: the same answer.
+    [again] = map_files.stop_lines([_light_at(8.0, -1.5)])
+    assert (again.lane_ids, again.rule_ids, again.light_ids) == (
+        stop.lane_ids,
+        stop.rule_ids,
+        stop.light_ids,
+    )
+
+
+def test_a_given_lanelet2_looks_past_a_long_lanelet_under_the_stop_point(
+    tmp_path: Path,
+) -> None:
+    map_files = MapFiles(_write_given_set(tmp_path / "set", approach_m=90.0))
+    [stop] = map_files.stop_lines([_light_at(88.0, -1.5)])
+    assert stop.lane_ids == ("100",) and stop.rule_ids == ("200",)
+
+
+def test_a_given_lanelet2_names_nothing_it_cannot_place(tmp_path: Path) -> None:
+    map_files = MapFiles(_write_given_set(tmp_path / "set"))
+    # Off every lanelet; on a lanelet with no light ahead.
+    for x, y in ((50.0, 50.0), (5.0, 1.5)):
+        [stop] = map_files.stop_lines([_light_at(x, y)])
+        assert stop.rule_ids == () and stop.light_ids == ()
+        assert stop.position_local.tolist() == [x, y, 0.0]
+    [stop] = map_files.stop_lines([_light_at(5.0, 1.5)])
+    assert stop.lane_ids == ("120",)
+
+
 # ---------------------------------------------------------------------------
 # One path for every sensor
 # ---------------------------------------------------------------------------

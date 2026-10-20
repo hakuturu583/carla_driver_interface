@@ -259,13 +259,21 @@ class _GivenLanelet2:
                 right = np.array([xy[n] for n in ways[members["right"]]])
             except KeyError:
                 continue  # a lanelet without both bounds, or off the local frame
-            # The left bound gives the direction; the right runs with it.
+            # The right bound runs with the left.
             if np.linalg.norm(left[0] - right[-1]) + np.linalg.norm(
                 left[-1] - right[0]
             ) < np.linalg.norm(left[0] - right[0]) + np.linalg.norm(
                 left[-1] - right[-1]
             ):
                 right = right[::-1]
+            # And the lanelet runs the way Lanelet2 reads it: with its left bound
+            # on the left, whichever order the ways are written in. A writer that
+            # shares one way between lanes running opposite ways -- roadgen does --
+            # writes a backward lane's bounds against its travel. Left bound on,
+            # right bound back, the outline turns clockwise when the left bound is
+            # on the left.
+            if _signed_area(np.vstack([left, right[::-1]])) > 0:
+                left, right = left[::-1], right[::-1]
             lanelet = rel.get("id", "")
             rules = tuple(
                 m.get("ref", "")
@@ -393,6 +401,12 @@ def _tags(element: ET.Element) -> dict[str, str]:
 
 def _length(points: np.ndarray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+
+
+def _signed_area(polygon: np.ndarray) -> float:
+    """The shoelace area of a closed ``(N, 2)`` outline: positive anticlockwise."""
+    x, y = polygon[:, 0], polygon[:, 1]
+    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y))
 
 
 def _cell(point: np.ndarray) -> tuple[int, int]:

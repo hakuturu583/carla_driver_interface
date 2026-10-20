@@ -193,7 +193,10 @@ def test_stop_lines_need_a_map_and_lights(tmp_path: Path) -> None:
 
 
 def _write_given_set(
-    directory: Path, light_on: str = "junction", approach_m: float = 10.0
+    directory: Path,
+    light_on: str = "junction",
+    approach_m: float = 10.0,
+    ways_backward: bool = False,
 ) -> Path:
     """A set whose Lanelet2 map was given, not converted: an empty trace.
 
@@ -201,6 +204,9 @@ def _write_given_set(
     lanelet 110 (10 m on); traffic light 200 (refers to way 300) hangs off
     ``light_on``.
     Lanelet 120, alongside 100 (y 0 .. 3), leads nowhere with a light.
+    ``ways_backward`` writes every bound's nodes west to east's reverse, as a
+    writer sharing ways between opposite lanes does: the lanelets still run
+    east, their left bounds on the left.
     """
     directory.mkdir(parents=True)
     a, j = approach_m, approach_m + 10
@@ -224,6 +230,8 @@ def _write_given_set(
         121: [7, 8],
         300: [9, 10],
     }
+    if ways_backward:
+        ways = {i: refs[::-1] if i != 300 else refs for i, refs in ways.items()}
     carrier = {"approach": 100, "junction": 110}[light_on]
     lanelets = {100: (101, 102), 110: (111, 112), 120: (121, 101)}
     osm = ["<osm>"]
@@ -311,6 +319,14 @@ def test_a_given_lanelet2_looks_past_a_long_lanelet_under_the_stop_point(
 ) -> None:
     map_files = MapFiles(_write_given_set(tmp_path / "set", approach_m=90.0))
     [stop] = map_files.stop_lines([_light_at(88.0, -1.5)])
+    assert stop.lane_ids == ("100",) and stop.rule_ids == ("200",)
+
+
+def test_a_given_lanelet2_runs_its_lanelets_as_lanelet2_does(tmp_path: Path) -> None:
+    # Bounds written against the travel, left bound still on the left: Lanelet2
+    # reads the lanelets running east, and the light ahead is found the same.
+    map_files = MapFiles(_write_given_set(tmp_path / "set", ways_backward=True))
+    [stop] = map_files.stop_lines([_light_at(8.0, -1.5)])
     assert stop.lane_ids == ("100",) and stop.rule_ids == ("200",)
 
 

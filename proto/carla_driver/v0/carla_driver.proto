@@ -104,6 +104,14 @@ message CarlaRendererData {
   // dynamic layer. Empty unless the runtime writes a map (`map_id`), which is
   // what a driver resolves these against.
   repeated TrafficLight traffic_lights = 12;
+  // The rollout up to this step as a tier4/e2e-devkit T4Scene
+  // (`proto/t4_scene.proto` of that repository), serialized: history only, its
+  // current row the last, in the T4 conventions -- Autoware's `map` frame, the
+  // ego at its rear axle (`base_link`). Its map is a reference; the resource is
+  // the map set's `t4` format (`<map_dir>/<map_id>/`). Empty unless the
+  // runtime is asked for scenes (`driver.t4_scene`). A policy reads it through
+  // `T4SceneDriver`; every other field stays as it is.
+  bytes t4_scene = 13;
 }
 
 // One traffic light and its state at `CarlaRendererData.snapshot_timestamp_us`.

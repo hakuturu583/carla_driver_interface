@@ -56,7 +56,12 @@ class T4SceneDriver(BaseDriver):
     row, the rig at ``time_now_us``; pose ``i`` is ``(i + 1)`` sampling
     intervals later.  Its ``extras`` may carry ``turn_indicator`` (an
     :class:`TurnIndicator` value) and ``debug_scalars`` (a ``str -> float``
-    mapping), which the result passes on.
+    mapping), which the result passes on; neither can cost the plan (an
+    unknown indicator is the servicer's to drop, a value that is not a number
+    is left out).
+
+    One drive at a time: a T4 driver holds a model and per-session state that
+    concurrent drives would share.
     """
 
     map_format: str = T4_MAP_FORMAT
@@ -76,6 +81,7 @@ class T4SceneDriver(BaseDriver):
         #: Map sets whose resource is registered, by map id.
         self._registered: set[str] = set()
         self._lock = threading.Lock()
+        self._drive_lock = threading.Lock()
 
     # -- sessions -------------------------------------------------------------
 
@@ -88,7 +94,9 @@ class T4SceneDriver(BaseDriver):
     # -- the decision -----------------------------------------------------------
 
     def drive(self, ctx: DriveContext) -> DriveResult:
-        output = self.scene_driver.drive(self.scene(ctx), session_id=ctx.session.uuid)
+        scene = self.scene(ctx)
+        with self._drive_lock:
+            output = self.scene_driver.drive(scene, session_id=ctx.session.uuid)
         return self.result(output, ctx)
 
     def scene(self, ctx: DriveContext) -> Any:
@@ -107,15 +115,33 @@ class T4SceneDriver(BaseDriver):
         from t4_e2e_devkit.serialization.protobuf import from_proto, t4_scene_pb2
 
         message = t4_scene_pb2.T4Scene.FromString(payload)
-        return from_proto(message, map_resources=self._map_resources(ctx.map))
+        try:
+            return from_proto(message, map_resources=self._map_resources(ctx.map))
+        except KeyError:
+            # The store evicted the map (it keeps the most recent few): read
+            # it again, once.
+            if ctx.map is None:
+                raise
+            with self._lock:
+                self._registered.discard(ctx.map.map_id)
+            return from_proto(message, map_resources=self._map_resources(ctx.map))
 
     def result(self, output: Any, ctx: DriveContext) -> DriveResult:
         """A T4 driver's ``DriverOutput`` as the egodriver's result, in the rig frame."""
         trajectory = output.trajectory
-        poses = np.asarray(trajectory.poses, dtype=np.float64).reshape(-1, 3)
+        poses = np.asarray(trajectory.poses, dtype=np.float64)
+        if poses.ndim != 2 or poses.shape[1] != 3:
+            raise ValueError(
+                f"{self.name} returned poses of shape {poses.shape}, not (N, 3) x, y, heading"
+            )
         step_us = int(
             round(float(trajectory.trajectory_sampling.interval_length) * 1e6)
         )
+        if step_us <= 0:
+            raise ValueError(
+                f"{self.name} returned a plan sampled every {step_us} us; "
+                "its poses would all be at the anchor"
+            )
         plan = Trajectory.empty()
         for index, (x, y, yaw) in enumerate(poses, start=1):
             plan.append(
@@ -125,15 +151,9 @@ class T4SceneDriver(BaseDriver):
         indicator = extras.get("turn_indicator")
         return DriveResult(
             trajectory_in_rig=plan,
-            turn_indicator=(
-                TurnIndicator.NO_COMMAND
-                if indicator is None
-                else TurnIndicator(int(indicator))
-            ),
-            debug_scalars={
-                str(key): float(value)
-                for key, value in dict(extras.get("debug_scalars") or {}).items()
-            },
+            # As the policy put it: the servicer drops one it does not know.
+            turn_indicator=TurnIndicator.NO_COMMAND if indicator is None else indicator,
+            debug_scalars=_scalars(extras.get("debug_scalars")),
         )
 
     def _map_resources(self, map_files: Optional["MapFiles"]) -> Any:
@@ -148,8 +168,8 @@ class T4SceneDriver(BaseDriver):
 
         with self._lock:
             if self._resources is None:
-                # Room for every map a server is likely to meet; an evicted map
-                # would be read again only if _registered forgot it too.
+                # Room for every map a server is likely to meet; an evicted
+                # one is read again (scene()).
                 self._resources = MapResourceStore(max_maps=64)
             if map_files.map_id not in self._registered:
                 resource = t4_scene_pb2.MapResource.FromString(
@@ -159,3 +179,14 @@ class T4SceneDriver(BaseDriver):
                 self._registered.add(map_files.map_id)
                 logger.info("registered the T4 map of %s", map_files.map_id)
             return self._resources
+
+
+def _scalars(values: Any) -> Dict[str, float]:
+    """The numbers among *values*; a debug value that is not one is left out."""
+    scalars: Dict[str, float] = {}
+    for key, value in dict(values or {}).items():
+        try:
+            scalars[str(key)] = float(value)
+        except (TypeError, ValueError):
+            logger.debug("debug scalar %r=%r is not a number; left out", key, value)
+    return scalars

@@ -164,3 +164,56 @@ def test_the_map_resource_is_read_once_per_map(
 
     assert read == ["abc"] and first is again and isinstance(first, _Store)
     assert driver._map_resources(None) is None  # noqa: SLF001
+
+
+def test_extras_a_model_got_wrong_do_not_cost_its_plan() -> None:
+    model = _Model({"turn_indicator": 9, "debug_scalars": {"lanes": 3, "why": "yield"}})
+    result = T4SceneDriver(model).drive(_ctx(_scene_bytes()))
+
+    # The servicer drops the unknown indicator; the plan stands.
+    assert result.turn_indicator == 9 and len(result.trajectory_in_rig) == 2
+    assert result.debug_scalars == {"lanes": 3.0}
+
+
+def test_a_plan_not_of_x_y_heading_is_refused() -> None:
+    class _Flat(_Model):
+        def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> Any:
+            return SimpleNamespace(
+                trajectory=SimpleNamespace(
+                    poses=np.zeros((3, 4)),
+                    trajectory_sampling=SimpleNamespace(interval_length=0.1),
+                ),
+                extras={},
+            )
+
+    with pytest.raises(ValueError, match=r"\(3, 4\)"):
+        T4SceneDriver(_Flat()).drive(_ctx(_scene_bytes()))
+
+
+def test_a_map_the_store_evicted_is_read_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from carla_driver_interface import t4_scene as module
+
+    calls: list = []
+
+    def from_proto(message: Any, map_resources: Any = None) -> Any:
+        calls.append(map_resources)
+        if len(calls) == 1:
+            raise KeyError("map resource is not registered: abc")
+        return "the scene"
+
+    import t4_e2e_devkit.serialization.protobuf as protobuf
+
+    monkeypatch.setattr(protobuf, "from_proto", from_proto)
+    reads: list = []
+    driver = T4SceneDriver(_Model())
+    monkeypatch.setattr(
+        driver, "_map_resources", lambda map_files: reads.append(map_files) or "store"
+    )
+    driver._registered.add("town-1")  # noqa: SLF001
+    map_files = SimpleNamespace(map_id="town-1", path=tmp_path / "t4_map.pb")
+
+    assert driver.scene(_ctx(_scene_bytes(), map_files=map_files)) == "the scene"
+    assert len(reads) == 2 and "town-1" not in driver._registered  # noqa: SLF001
+    assert module.T4SceneDriver is T4SceneDriver

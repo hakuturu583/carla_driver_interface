@@ -31,7 +31,7 @@ import logging
 import pickle
 import threading
 import time
-from typing import Dict, Literal, Optional, get_args
+from typing import Any, Dict, Literal, Optional, get_args
 
 import grpc
 import numpy as np
@@ -332,7 +332,7 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
             trajectory=trajectory,
             debug_info=DriveResponse.DebugInfo(
                 unstructured_debug_info=self._debug_payload(
-                    elapsed, result.debug_scalars
+                    elapsed, _debug_scalars(result.debug_scalars, self._driver.name)
                 ),
                 sampled_trajectories=sampled,
             ),
@@ -409,6 +409,27 @@ class EgodriverServicer(EgodriverServiceServicer, CarlaVehicleServiceServicer):
                 "unreachable: context.abort raises"
             )  # pragma: no cover
         return session
+
+
+def _debug_scalars(values: Dict[str, Any], policy_name: str) -> Dict[str, float]:
+    """The numbers among a policy's debug scalars.
+
+    Like a bad indicator, a debug value that is not a number must not cost the
+    policy its plan: it is logged and left out.
+    """
+    scalars: Dict[str, float] = {}
+    for key, value in (values or {}).items():
+        try:
+            scalars[str(key)] = float(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                "policy %r returned debug scalar %r=%r, which is not a number; "
+                "leaving it out",
+                policy_name,
+                key,
+                value,
+            )
+    return scalars
 
 
 def _turn_indicator(value: int, policy_name: str) -> TurnIndicator:

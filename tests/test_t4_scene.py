@@ -71,12 +71,25 @@ def _scene_bytes(rows: int = 3) -> bytes:
     return to_proto(scene).SerializeToString()
 
 
-def _ctx(payload: bytes, *, session: str = "s1", map_files: Any = None) -> DriveContext:
+def _session(uuid: str = "s1") -> SessionState:
+    return SessionState(uuid=uuid, seed=0, scene_id="scene", cameras={})
+
+
+_SENT = object()
+
+
+def _ctx(
+    payload: bytes, *, map_files: Any = None, renderer_data: Any = _SENT
+) -> DriveContext:
     return DriveContext(
-        session=SessionState(uuid=session, seed=0, scene_id="scene", cameras={}),
+        session=_session(),
         time_now_us=1_000_000,
         time_query_us=1_100_000,
-        renderer_data=CarlaRendererData(t4_scene=payload),
+        renderer_data=(
+            CarlaRendererData(t4_scene=payload)
+            if renderer_data is _SENT
+            else renderer_data
+        ),
         map=map_files,
     )
 
@@ -91,7 +104,7 @@ def test_it_is_a_base_driver_named_by_its_model() -> None:
 def test_the_scene_reaches_the_model_under_the_session() -> None:
     model = _Model()
     driver = T4SceneDriver(model)
-    session = SessionState(uuid="s1", seed=0, scene_id="scene", cameras={})
+    session = _session()
     driver.on_session_start(session)
     driver.drive(_ctx(_scene_bytes()))
     driver.on_session_close(session)
@@ -127,15 +140,8 @@ def test_the_models_extras_carry_the_indicator_and_scalars() -> None:
 
 @pytest.mark.parametrize("renderer_data", [None, CarlaRendererData()])
 def test_a_drive_without_a_scene_is_refused(renderer_data: Any) -> None:
-    ctx = _ctx(b"")
-    ctx = DriveContext(
-        session=ctx.session,
-        time_now_us=ctx.time_now_us,
-        time_query_us=ctx.time_query_us,
-        renderer_data=renderer_data,
-    )
     with pytest.raises(RuntimeError, match="driver.t4_scene"):
-        T4SceneDriver(_Model()).drive(ctx)
+        T4SceneDriver(_Model()).drive(_ctx(b"", renderer_data=renderer_data))
 
 
 def test_the_map_resource_is_read_once_per_map(
@@ -159,20 +165,11 @@ def test_the_map_resource_is_read_once_per_map(
     map_files = SimpleNamespace(map_id="town-1", path=path)
 
     driver = T4SceneDriver(_Model())
-    first = driver._map_resources(map_files)  # noqa: SLF001
-    again = driver._map_resources(map_files)  # noqa: SLF001
+    first = driver._map_store(map_files)  # noqa: SLF001
+    again = driver._map_store(map_files)  # noqa: SLF001
 
     assert read == ["abc"] and first is again and isinstance(first, _Store)
-    assert driver._map_resources(None) is None  # noqa: SLF001
-
-
-def test_extras_a_model_got_wrong_do_not_cost_its_plan() -> None:
-    model = _Model({"turn_indicator": 9, "debug_scalars": {"lanes": 3, "why": "yield"}})
-    result = T4SceneDriver(model).drive(_ctx(_scene_bytes()))
-
-    # The servicer drops the unknown indicator; the plan stands.
-    assert result.turn_indicator == 9 and len(result.trajectory_in_rig) == 2
-    assert result.debug_scalars == {"lanes": 3.0}
+    assert driver._map_store(None) is None  # noqa: SLF001
 
 
 def test_a_plan_not_of_x_y_heading_is_refused() -> None:
@@ -190,11 +187,14 @@ def test_a_plan_not_of_x_y_heading_is_refused() -> None:
         T4SceneDriver(_Flat()).drive(_ctx(_scene_bytes()))
 
 
-def test_a_map_the_store_evicted_is_read_again(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from carla_driver_interface import t4_scene as module
-
+def test_a_map_the_store_let_go_is_registered_again(tmp_path: Path) -> None:
+    # A store that has let the map go: from_proto first finds it missing.
+    driver = T4SceneDriver(_Model())
+    registered: list = []
+    store = SimpleNamespace(register=registered.append)
+    driver._store = store  # noqa: SLF001
+    driver._read["town-1"] = "the resource read"  # noqa: SLF001
+    map_files = SimpleNamespace(map_id="town-1", path=tmp_path / "t4_map.pb")
     calls: list = []
 
     def from_proto(message: Any, map_resources: Any = None) -> Any:
@@ -205,15 +205,7 @@ def test_a_map_the_store_evicted_is_read_again(
 
     import t4_e2e_devkit.serialization.protobuf as protobuf
 
-    monkeypatch.setattr(protobuf, "from_proto", from_proto)
-    reads: list = []
-    driver = T4SceneDriver(_Model())
-    monkeypatch.setattr(
-        driver, "_map_resources", lambda map_files: reads.append(map_files) or "store"
-    )
-    driver._registered.add("town-1")  # noqa: SLF001
-    map_files = SimpleNamespace(map_id="town-1", path=tmp_path / "t4_map.pb")
-
-    assert driver.scene(_ctx(_scene_bytes(), map_files=map_files)) == "the scene"
-    assert len(reads) == 2 and "town-1" not in driver._registered  # noqa: SLF001
-    assert module.T4SceneDriver is T4SceneDriver
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(protobuf, "from_proto", from_proto)
+        assert driver.scene(_ctx(_scene_bytes(), map_files=map_files)) == "the scene"
+    assert registered == ["the resource read"] and calls == [store, store]

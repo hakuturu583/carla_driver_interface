@@ -56,9 +56,8 @@ class T4SceneDriver(BaseDriver):
     row, the rig at ``time_now_us``; pose ``i`` is ``(i + 1)`` sampling
     intervals later.  Its ``extras`` may carry ``turn_indicator`` (an
     :class:`TurnIndicator` value) and ``debug_scalars`` (a ``str -> float``
-    mapping), which the result passes on; neither can cost the plan (an
-    unknown indicator is the servicer's to drop, a value that is not a number
-    is left out).
+    mapping), which the result passes on; the servicer drops a value of
+    either it cannot send, keeping the plan.
 
     One drive at a time: a T4 driver holds a model and per-session state that
     concurrent drives would share.
@@ -76,12 +75,11 @@ class T4SceneDriver(BaseDriver):
         self.scene_driver = scene_driver
         self.map_dir = map_dir
         self.name = name if name is not None else str(scene_driver.name())
-        #: The map resources registered so far, one store for every map.
-        self._resources: Any = None
-        #: Map sets whose resource is registered, by map id.
-        self._registered: set[str] = set()
+        #: The map resources registered, one store for every map.
+        self._store: Any = None
+        #: Each map set's resource, read once, by map id.
+        self._read: Dict[str, Any] = {}
         self._lock = threading.Lock()
-        self._drive_lock = threading.Lock()
 
     # -- sessions -------------------------------------------------------------
 
@@ -94,9 +92,10 @@ class T4SceneDriver(BaseDriver):
     # -- the decision -----------------------------------------------------------
 
     def drive(self, ctx: DriveContext) -> DriveResult:
-        scene = self.scene(ctx)
-        with self._drive_lock:
-            output = self.scene_driver.drive(scene, session_id=ctx.session.uuid)
+        with self._lock:
+            output = self.scene_driver.drive(
+                self.scene(ctx), session_id=ctx.session.uuid
+            )
         return self.result(output, ctx)
 
     def scene(self, ctx: DriveContext) -> Any:
@@ -115,16 +114,16 @@ class T4SceneDriver(BaseDriver):
         from t4_e2e_devkit.serialization.protobuf import from_proto, t4_scene_pb2
 
         message = t4_scene_pb2.T4Scene.FromString(payload)
+        store = self._map_store(ctx.map)
         try:
-            return from_proto(message, map_resources=self._map_resources(ctx.map))
-        except KeyError:
-            # The store evicted the map (it keeps the most recent few): read
-            # it again, once.
-            if ctx.map is None:
+            return from_proto(message, map_resources=store)
+        except KeyError as error:
+            # The store keeps the most recent maps; one it let go is
+            # registered again from the copy read.
+            if ctx.map is None or "not registered" not in str(error):
                 raise
-            with self._lock:
-                self._registered.discard(ctx.map.map_id)
-            return from_proto(message, map_resources=self._map_resources(ctx.map))
+            store.register(self._read[ctx.map.map_id])
+            return from_proto(message, map_resources=store)
 
     def result(self, output: Any, ctx: DriveContext) -> DriveResult:
         """A T4 driver's ``DriverOutput`` as the egodriver's result, in the rig frame."""
@@ -147,46 +146,31 @@ class T4SceneDriver(BaseDriver):
             plan.append(
                 ctx.time_now_us + index * step_us, Pose.from_xyz_yaw(x, y, 0.0, yaw)
             )
-        extras: Dict[str, Any] = dict(getattr(output, "extras", None) or {})
-        indicator = extras.get("turn_indicator")
+        extras = output.extras or {}
         return DriveResult(
             trajectory_in_rig=plan,
-            # As the policy put it: the servicer drops one it does not know.
-            turn_indicator=TurnIndicator.NO_COMMAND if indicator is None else indicator,
-            debug_scalars=_scalars(extras.get("debug_scalars")),
+            turn_indicator=extras.get("turn_indicator", TurnIndicator.NO_COMMAND),
+            debug_scalars=dict(extras.get("debug_scalars") or {}),
         )
 
-    def _map_resources(self, map_files: Optional["MapFiles"]) -> Any:
+    def _map_store(self, map_files: Optional["MapFiles"]) -> Any:
         """The store holding the step's map resource; ``None`` without a map set.
 
-        Each set's resource is read and verified once (it does not change under
-        its id); the store keeps every map registered so far.
+        Each set's resource is read and registered once: it does not change
+        under its id.
         """
         if map_files is None:
             return None
         from t4_e2e_devkit.serialization.protobuf import MapResourceStore, t4_scene_pb2
 
-        with self._lock:
-            if self._resources is None:
-                # Room for every map a server is likely to meet; an evicted
-                # one is read again (scene()).
-                self._resources = MapResourceStore(max_maps=64)
-            if map_files.map_id not in self._registered:
-                resource = t4_scene_pb2.MapResource.FromString(
-                    Path(map_files.path).read_bytes()
-                )
-                self._resources.register(resource)
-                self._registered.add(map_files.map_id)
-                logger.info("registered the T4 map of %s", map_files.map_id)
-            return self._resources
-
-
-def _scalars(values: Any) -> Dict[str, float]:
-    """The numbers among *values*; a debug value that is not one is left out."""
-    scalars: Dict[str, float] = {}
-    for key, value in dict(values or {}).items():
-        try:
-            scalars[str(key)] = float(value)
-        except (TypeError, ValueError):
-            logger.debug("debug scalar %r=%r is not a number; left out", key, value)
-    return scalars
+        if self._store is None:
+            # Room for every map a server is likely to meet.
+            self._store = MapResourceStore(max_maps=64)
+        if map_files.map_id not in self._read:
+            resource = t4_scene_pb2.MapResource.FromString(
+                Path(map_files.path).read_bytes()
+            )
+            self._store.register(resource)
+            self._read[map_files.map_id] = resource
+            logger.info("registered the T4 map of %s", map_files.map_id)
+        return self._store

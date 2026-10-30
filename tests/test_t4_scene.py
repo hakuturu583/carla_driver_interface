@@ -162,7 +162,7 @@ def test_the_map_resource_is_read_once_per_map(
     path.write_bytes(
         t4_scene_pb2.MapResource(sha256="abc", data=b"<osm/>").SerializeToString()
     )
-    map_files = SimpleNamespace(map_id="town-1", path=path)
+    map_files: Any = SimpleNamespace(map_id="town-1", path=path)
 
     driver = T4SceneDriver(_Model())
     first = driver._map_store(map_files)  # noqa: SLF001

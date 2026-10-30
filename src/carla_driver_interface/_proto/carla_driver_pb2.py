@@ -23,7 +23,7 @@ from . import egodriver_pb2 as alpasim__grpc_dot_v0_dot_egodriver__pb2
 from . import sensorsim_pb2 as alpasim__grpc_dot_v0_dot_sensorsim__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"carla_driver/v0/carla_driver.proto\x12\x0f\x63\x61rla_driver.v0\x1a\x1c\x61lpasim_grpc/v0/common.proto\x1a\x1f\x61lpasim_grpc/v0/egodriver.proto\x1a\x1f\x61lpasim_grpc/v0/sensorsim.proto\"\xce\x01\n\x0c\x43\x61rlaWeather\x12\x12\n\ncloudiness\x18\x01 \x01(\x02\x12\x15\n\rprecipitation\x18\x02 \x01(\x02\x12\x1e\n\x16precipitation_deposits\x18\x03 \x01(\x02\x12\x16\n\x0ewind_intensity\x18\x04 \x01(\x02\x12\x19\n\x11sun_azimuth_angle\x18\x05 \x01(\x02\x12\x1a\n\x12sun_altitude_angle\x18\x06 \x01(\x02\x12\x13\n\x0b\x66og_density\x18\x07 \x01(\x02\x12\x0f\n\x07wetness\x18\x08 \x01(\x02\"\xa7\x01\n\x0f\x43\x61rlaActorState\x12\x10\n\x08track_id\x18\x01 \x01(\t\x12\x0f\n\x07type_id\x18\x02 \x01(\t\x12(\n\x12pose_local_to_aabb\x18\x03 \x01(\x0b\x32\x0c.common.Pose\x12\x1a\n\x04\x61\x61\x62\x62\x18\x04 \x01(\x0b\x32\x0c.common.AABB\x12+\n\rdynamic_state\x18\x05 \x01(\x0b\x32\x14.common.DynamicState\"\xb6\x03\n\x11\x43\x61rlaRendererData\x12\x1d\n\x15snapshot_timestamp_us\x18\x01 \x01(\x06\x12\x10\n\x08\x66rame_id\x18\x02 \x01(\x04\x12\x10\n\x08map_name\x18\x03 \x01(\t\x12.\n\x07weather\x18\x04 \x01(\x0b\x32\x1d.carla_driver.v0.CarlaWeather\x12=\n\x11\x65go_traffic_light\x18\x05 \x01(\x0e\x32\".carla_driver.v0.TrafficLightState\x12$\n\x1c\x65go_traffic_light_distance_m\x18\x06 \x01(\x02\x12\x17\n\x0fspeed_limit_mps\x18\x07 \x01(\x02\x12\x30\n\x06\x61\x63tors\x18\x08 \x03(\x0b\x32 .carla_driver.v0.CarlaActorState\x12*\n\x05lidar\x18\n \x03(\x0b\x32\x1b.carla_driver.v0.LidarSweep\x12\x0e\n\x06map_id\x18\x0b \x01(\t\x12\x35\n\x0etraffic_lights\x18\x0c \x03(\x0b\x32\x1d.carla_driver.v0.TrafficLightJ\x04\x08\t\x10\nR\x05lanes\"\x88\x01\n\x0cTrafficLight\x12\x14\n\x0copendrive_id\x18\x01 \x01(\t\x12\x31\n\x05state\x18\x02 \x01(\x0e\x32\".carla_driver.v0.TrafficLightState\x12/\n\x0bstop_points\x18\x03 \x03(\x0b\x32\x1a.carla_driver.v0.StopPoint\"g\n\tStopPoint\x12\x0f\n\x07road_id\x18\x01 \x01(\x05\x12\x12\n\nsection_id\x18\x02 \x01(\x05\x12\x0f\n\x07lane_id\x18\x03 \x01(\x05\x12$\n\x0eposition_local\x18\x04 \x01(\x0b\x32\x0c.common.Vec3\"\x83\x01\n\nLidarSweep\x12\x12\n\nlogical_id\x18\x01 \x01(\t\x12\x14\n\x0ctimestamp_us\x18\x02 \x01(\x06\x12\"\n\x0crig_to_lidar\x18\x03 \x01(\x0b\x32\x0c.common.Pose\x12\x12\n\nnum_points\x18\x04 \x01(\r\x12\x13\n\x0bpoints_xyzi\x18\x05 \x01(\x0c\"\xb9\x01\n\x13\x43\x61rlaDriveDebugInfo\x12\x13\n\x0bpolicy_name\x18\x01 \x01(\t\x12\x19\n\x11inference_seconds\x18\x02 \x01(\x02\x12\x42\n\x07scalars\x18\x03 \x03(\x0b\x32\x31.carla_driver.v0.CarlaDriveDebugInfo.ScalarsEntry\x1a.\n\x0cScalarsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01\"]\n\x0eVehicleCommand\x12\x13\n\x0btime_now_us\x18\x01 \x01(\x06\x12\x36\n\x0eturn_indicator\x18\x02 \x01(\x0e\x32\x1e.carla_driver.v0.TurnIndicator\"-\n\x15VehicleCommandRequest\x12\x14\n\x0csession_uuid\x18\x01 \x01(\t\"\x92\x02\n\x15\x43\x61rlaDriveSessionInfo\x12,\n\x04\x62\x61se\x18\x01 \x01(\x0b\x32\x1e.egodriver.DriveSessionRequest\x12\x10\n\x08map_name\x18\x02 \x01(\t\x12\x15\n\rscenario_name\x18\x03 \x01(\t\x12\x16\n\x0e\x66ixed_delta_us\x18\x04 \x01(\x06\x12\x1a\n\x12policy_timestep_us\x18\x05 \x01(\x06\x12\x1a\n\x12rear_axle_offset_m\x18\x06 \x01(\x02\x12R\n\x07\x63\x61meras\x18\x07 \x03(\x0b\x32\x41.nre.grpc.protos.sensorsim.AvailableCamerasReturn.AvailableCamera\"\x8d\x01\n\x0b\x43ompatEntry\x12\x0c\n\x04\x61rea\x18\x01 \x01(\t\x12\x19\n\x11\x61lpasim_behaviour\x18\x02 \x01(\t\x12\x17\n\x0f\x63\x61rla_behaviour\x18\x03 \x01(\t\x12+\n\x05level\x18\x04 \x01(\x0e\x32\x1c.carla_driver.v0.CompatLevel\x12\x0f\n\x07symbols\x18\x05 \x03(\t\"\xc4\x01\n\x11\x43\x61rlaCompatReport\x12&\n\x1e\x63\x61rla_driver_interface_version\x18\x01 \x01(\t\x12\x18\n\x10\x61lpasim_grpc_rev\x18\x02 \x01(\t\x12>\n\x18\x61lpasim_grpc_api_version\x18\x03 \x01(\x0b\x32\x1c.common.VersionId.APIVersion\x12-\n\x07\x65ntries\x18\x04 \x03(\x0b\x32\x1c.carla_driver.v0.CompatEntry*\xcb\x01\n\x11TrafficLightState\x12\x1f\n\x1bTRAFFIC_LIGHT_STATE_UNKNOWN\x10\x00\x12\x1c\n\x18TRAFFIC_LIGHT_STATE_NONE\x10\x01\x12\x1b\n\x17TRAFFIC_LIGHT_STATE_RED\x10\x02\x12\x1e\n\x1aTRAFFIC_LIGHT_STATE_YELLOW\x10\x03\x12\x1d\n\x19TRAFFIC_LIGHT_STATE_GREEN\x10\x04\x12\x1b\n\x17TRAFFIC_LIGHT_STATE_OFF\x10\x05*\x8b\x01\n\rTurnIndicator\x12\x1d\n\x19TURN_INDICATOR_NO_COMMAND\x10\x00\x12\x1a\n\x16TURN_INDICATOR_DISABLE\x10\x01\x12\x1e\n\x1aTURN_INDICATOR_ENABLE_LEFT\x10\x02\x12\x1f\n\x1bTURN_INDICATOR_ENABLE_RIGHT\x10\x03*\xb6\x01\n\x0b\x43ompatLevel\x12\x1c\n\x18\x43OMPAT_LEVEL_UNSPECIFIED\x10\x00\x12\x16\n\x12\x43OMPAT_LEVEL_EXACT\x10\x01\x12\x18\n\x14\x43OMPAT_LEVEL_PARTIAL\x10\x02\x12\x1b\n\x17\x43OMPAT_LEVEL_STRUCTURAL\x10\x03\x12\x1e\n\x1a\x43OMPAT_LEVEL_UNIMPLEMENTED\x10\x04\x12\x1a\n\x16\x43OMPAT_LEVEL_EXTENSION\x10\x05\x32u\n\x13\x43\x61rlaVehicleService\x12^\n\x13get_vehicle_command\x12&.carla_driver.v0.VehicleCommandRequest\x1a\x1f.carla_driver.v0.VehicleCommandb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"carla_driver/v0/carla_driver.proto\x12\x0f\x63\x61rla_driver.v0\x1a\x1c\x61lpasim_grpc/v0/common.proto\x1a\x1f\x61lpasim_grpc/v0/egodriver.proto\x1a\x1f\x61lpasim_grpc/v0/sensorsim.proto\"\xce\x01\n\x0c\x43\x61rlaWeather\x12\x12\n\ncloudiness\x18\x01 \x01(\x02\x12\x15\n\rprecipitation\x18\x02 \x01(\x02\x12\x1e\n\x16precipitation_deposits\x18\x03 \x01(\x02\x12\x16\n\x0ewind_intensity\x18\x04 \x01(\x02\x12\x19\n\x11sun_azimuth_angle\x18\x05 \x01(\x02\x12\x1a\n\x12sun_altitude_angle\x18\x06 \x01(\x02\x12\x13\n\x0b\x66og_density\x18\x07 \x01(\x02\x12\x0f\n\x07wetness\x18\x08 \x01(\x02\"\xa7\x01\n\x0f\x43\x61rlaActorState\x12\x10\n\x08track_id\x18\x01 \x01(\t\x12\x0f\n\x07type_id\x18\x02 \x01(\t\x12(\n\x12pose_local_to_aabb\x18\x03 \x01(\x0b\x32\x0c.common.Pose\x12\x1a\n\x04\x61\x61\x62\x62\x18\x04 \x01(\x0b\x32\x0c.common.AABB\x12+\n\rdynamic_state\x18\x05 \x01(\x0b\x32\x14.common.DynamicState\"\xc8\x03\n\x11\x43\x61rlaRendererData\x12\x1d\n\x15snapshot_timestamp_us\x18\x01 \x01(\x06\x12\x10\n\x08\x66rame_id\x18\x02 \x01(\x04\x12\x10\n\x08map_name\x18\x03 \x01(\t\x12.\n\x07weather\x18\x04 \x01(\x0b\x32\x1d.carla_driver.v0.CarlaWeather\x12=\n\x11\x65go_traffic_light\x18\x05 \x01(\x0e\x32\".carla_driver.v0.TrafficLightState\x12$\n\x1c\x65go_traffic_light_distance_m\x18\x06 \x01(\x02\x12\x17\n\x0fspeed_limit_mps\x18\x07 \x01(\x02\x12\x30\n\x06\x61\x63tors\x18\x08 \x03(\x0b\x32 .carla_driver.v0.CarlaActorState\x12*\n\x05lidar\x18\n \x03(\x0b\x32\x1b.carla_driver.v0.LidarSweep\x12\x0e\n\x06map_id\x18\x0b \x01(\t\x12\x35\n\x0etraffic_lights\x18\x0c \x03(\x0b\x32\x1d.carla_driver.v0.TrafficLight\x12\x10\n\x08t4_scene\x18\r \x01(\x0cJ\x04\x08\t\x10\nR\x05lanes\"\x88\x01\n\x0cTrafficLight\x12\x14\n\x0copendrive_id\x18\x01 \x01(\t\x12\x31\n\x05state\x18\x02 \x01(\x0e\x32\".carla_driver.v0.TrafficLightState\x12/\n\x0bstop_points\x18\x03 \x03(\x0b\x32\x1a.carla_driver.v0.StopPoint\"g\n\tStopPoint\x12\x0f\n\x07road_id\x18\x01 \x01(\x05\x12\x12\n\nsection_id\x18\x02 \x01(\x05\x12\x0f\n\x07lane_id\x18\x03 \x01(\x05\x12$\n\x0eposition_local\x18\x04 \x01(\x0b\x32\x0c.common.Vec3\"\x83\x01\n\nLidarSweep\x12\x12\n\nlogical_id\x18\x01 \x01(\t\x12\x14\n\x0ctimestamp_us\x18\x02 \x01(\x06\x12\"\n\x0crig_to_lidar\x18\x03 \x01(\x0b\x32\x0c.common.Pose\x12\x12\n\nnum_points\x18\x04 \x01(\r\x12\x13\n\x0bpoints_xyzi\x18\x05 \x01(\x0c\"\xb9\x01\n\x13\x43\x61rlaDriveDebugInfo\x12\x13\n\x0bpolicy_name\x18\x01 \x01(\t\x12\x19\n\x11inference_seconds\x18\x02 \x01(\x02\x12\x42\n\x07scalars\x18\x03 \x03(\x0b\x32\x31.carla_driver.v0.CarlaDriveDebugInfo.ScalarsEntry\x1a.\n\x0cScalarsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x01:\x02\x38\x01\"]\n\x0eVehicleCommand\x12\x13\n\x0btime_now_us\x18\x01 \x01(\x06\x12\x36\n\x0eturn_indicator\x18\x02 \x01(\x0e\x32\x1e.carla_driver.v0.TurnIndicator\"-\n\x15VehicleCommandRequest\x12\x14\n\x0csession_uuid\x18\x01 \x01(\t\"\x92\x02\n\x15\x43\x61rlaDriveSessionInfo\x12,\n\x04\x62\x61se\x18\x01 \x01(\x0b\x32\x1e.egodriver.DriveSessionRequest\x12\x10\n\x08map_name\x18\x02 \x01(\t\x12\x15\n\rscenario_name\x18\x03 \x01(\t\x12\x16\n\x0e\x66ixed_delta_us\x18\x04 \x01(\x06\x12\x1a\n\x12policy_timestep_us\x18\x05 \x01(\x06\x12\x1a\n\x12rear_axle_offset_m\x18\x06 \x01(\x02\x12R\n\x07\x63\x61meras\x18\x07 \x03(\x0b\x32\x41.nre.grpc.protos.sensorsim.AvailableCamerasReturn.AvailableCamera\"\x8d\x01\n\x0b\x43ompatEntry\x12\x0c\n\x04\x61rea\x18\x01 \x01(\t\x12\x19\n\x11\x61lpasim_behaviour\x18\x02 \x01(\t\x12\x17\n\x0f\x63\x61rla_behaviour\x18\x03 \x01(\t\x12+\n\x05level\x18\x04 \x01(\x0e\x32\x1c.carla_driver.v0.CompatLevel\x12\x0f\n\x07symbols\x18\x05 \x03(\t\"\xc4\x01\n\x11\x43\x61rlaCompatReport\x12&\n\x1e\x63\x61rla_driver_interface_version\x18\x01 \x01(\t\x12\x18\n\x10\x61lpasim_grpc_rev\x18\x02 \x01(\t\x12>\n\x18\x61lpasim_grpc_api_version\x18\x03 \x01(\x0b\x32\x1c.common.VersionId.APIVersion\x12-\n\x07\x65ntries\x18\x04 \x03(\x0b\x32\x1c.carla_driver.v0.CompatEntry*\xcb\x01\n\x11TrafficLightState\x12\x1f\n\x1bTRAFFIC_LIGHT_STATE_UNKNOWN\x10\x00\x12\x1c\n\x18TRAFFIC_LIGHT_STATE_NONE\x10\x01\x12\x1b\n\x17TRAFFIC_LIGHT_STATE_RED\x10\x02\x12\x1e\n\x1aTRAFFIC_LIGHT_STATE_YELLOW\x10\x03\x12\x1d\n\x19TRAFFIC_LIGHT_STATE_GREEN\x10\x04\x12\x1b\n\x17TRAFFIC_LIGHT_STATE_OFF\x10\x05*\x8b\x01\n\rTurnIndicator\x12\x1d\n\x19TURN_INDICATOR_NO_COMMAND\x10\x00\x12\x1a\n\x16TURN_INDICATOR_DISABLE\x10\x01\x12\x1e\n\x1aTURN_INDICATOR_ENABLE_LEFT\x10\x02\x12\x1f\n\x1bTURN_INDICATOR_ENABLE_RIGHT\x10\x03*\xb6\x01\n\x0b\x43ompatLevel\x12\x1c\n\x18\x43OMPAT_LEVEL_UNSPECIFIED\x10\x00\x12\x16\n\x12\x43OMPAT_LEVEL_EXACT\x10\x01\x12\x18\n\x14\x43OMPAT_LEVEL_PARTIAL\x10\x02\x12\x1b\n\x17\x43OMPAT_LEVEL_STRUCTURAL\x10\x03\x12\x1e\n\x1a\x43OMPAT_LEVEL_UNIMPLEMENTED\x10\x04\x12\x1a\n\x16\x43OMPAT_LEVEL_EXTENSION\x10\x05\x32u\n\x13\x43\x61rlaVehicleService\x12^\n\x13get_vehicle_command\x12&.carla_driver.v0.VehicleCommandRequest\x1a\x1f.carla_driver.v0.VehicleCommandb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,38 +32,38 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   DESCRIPTOR._options = None
   _globals['_CARLADRIVEDEBUGINFO_SCALARSENTRY']._options = None
   _globals['_CARLADRIVEDEBUGINFO_SCALARSENTRY']._serialized_options = b'8\001'
-  _globals['_TRAFFICLIGHTSTATE']._serialized_start=2300
-  _globals['_TRAFFICLIGHTSTATE']._serialized_end=2503
-  _globals['_TURNINDICATOR']._serialized_start=2506
-  _globals['_TURNINDICATOR']._serialized_end=2645
-  _globals['_COMPATLEVEL']._serialized_start=2648
-  _globals['_COMPATLEVEL']._serialized_end=2830
+  _globals['_TRAFFICLIGHTSTATE']._serialized_start=2318
+  _globals['_TRAFFICLIGHTSTATE']._serialized_end=2521
+  _globals['_TURNINDICATOR']._serialized_start=2524
+  _globals['_TURNINDICATOR']._serialized_end=2663
+  _globals['_COMPATLEVEL']._serialized_start=2666
+  _globals['_COMPATLEVEL']._serialized_end=2848
   _globals['_CARLAWEATHER']._serialized_start=152
   _globals['_CARLAWEATHER']._serialized_end=358
   _globals['_CARLAACTORSTATE']._serialized_start=361
   _globals['_CARLAACTORSTATE']._serialized_end=528
   _globals['_CARLARENDERERDATA']._serialized_start=531
-  _globals['_CARLARENDERERDATA']._serialized_end=969
-  _globals['_TRAFFICLIGHT']._serialized_start=972
-  _globals['_TRAFFICLIGHT']._serialized_end=1108
-  _globals['_STOPPOINT']._serialized_start=1110
-  _globals['_STOPPOINT']._serialized_end=1213
-  _globals['_LIDARSWEEP']._serialized_start=1216
-  _globals['_LIDARSWEEP']._serialized_end=1347
-  _globals['_CARLADRIVEDEBUGINFO']._serialized_start=1350
-  _globals['_CARLADRIVEDEBUGINFO']._serialized_end=1535
-  _globals['_CARLADRIVEDEBUGINFO_SCALARSENTRY']._serialized_start=1489
-  _globals['_CARLADRIVEDEBUGINFO_SCALARSENTRY']._serialized_end=1535
-  _globals['_VEHICLECOMMAND']._serialized_start=1537
-  _globals['_VEHICLECOMMAND']._serialized_end=1630
-  _globals['_VEHICLECOMMANDREQUEST']._serialized_start=1632
-  _globals['_VEHICLECOMMANDREQUEST']._serialized_end=1677
-  _globals['_CARLADRIVESESSIONINFO']._serialized_start=1680
-  _globals['_CARLADRIVESESSIONINFO']._serialized_end=1954
-  _globals['_COMPATENTRY']._serialized_start=1957
-  _globals['_COMPATENTRY']._serialized_end=2098
-  _globals['_CARLACOMPATREPORT']._serialized_start=2101
-  _globals['_CARLACOMPATREPORT']._serialized_end=2297
-  _globals['_CARLAVEHICLESERVICE']._serialized_start=2832
-  _globals['_CARLAVEHICLESERVICE']._serialized_end=2949
+  _globals['_CARLARENDERERDATA']._serialized_end=987
+  _globals['_TRAFFICLIGHT']._serialized_start=990
+  _globals['_TRAFFICLIGHT']._serialized_end=1126
+  _globals['_STOPPOINT']._serialized_start=1128
+  _globals['_STOPPOINT']._serialized_end=1231
+  _globals['_LIDARSWEEP']._serialized_start=1234
+  _globals['_LIDARSWEEP']._serialized_end=1365
+  _globals['_CARLADRIVEDEBUGINFO']._serialized_start=1368
+  _globals['_CARLADRIVEDEBUGINFO']._serialized_end=1553
+  _globals['_CARLADRIVEDEBUGINFO_SCALARSENTRY']._serialized_start=1507
+  _globals['_CARLADRIVEDEBUGINFO_SCALARSENTRY']._serialized_end=1553
+  _globals['_VEHICLECOMMAND']._serialized_start=1555
+  _globals['_VEHICLECOMMAND']._serialized_end=1648
+  _globals['_VEHICLECOMMANDREQUEST']._serialized_start=1650
+  _globals['_VEHICLECOMMANDREQUEST']._serialized_end=1695
+  _globals['_CARLADRIVESESSIONINFO']._serialized_start=1698
+  _globals['_CARLADRIVESESSIONINFO']._serialized_end=1972
+  _globals['_COMPATENTRY']._serialized_start=1975
+  _globals['_COMPATENTRY']._serialized_end=2116
+  _globals['_CARLACOMPATREPORT']._serialized_start=2119
+  _globals['_CARLACOMPATREPORT']._serialized_end=2315
+  _globals['_CARLAVEHICLESERVICE']._serialized_start=2850
+  _globals['_CARLAVEHICLESERVICE']._serialized_end=2967
 # @@protoc_insertion_point(module_scope)

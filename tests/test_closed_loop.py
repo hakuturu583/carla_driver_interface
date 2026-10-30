@@ -180,6 +180,26 @@ def test_a_bad_turn_indicator_costs_the_policy_nothing_but_the_command(
     )
 
 
+class _BadScalar(_BadSignal):
+    """Plans, but reports a debug value that is not a number."""
+
+    name = "bad_scalar"
+
+    def drive(self, ctx: DriveContext) -> DriveResult:
+        result = super().drive(ctx)
+        result.turn_indicator = TurnIndicator.NO_COMMAND
+        result.debug_scalars = {"reason": "yield"}  # type: ignore[dict-item]
+        return result
+
+
+def test_a_debug_value_that_is_not_a_number_costs_the_policy_nothing(
+    transport: Transport,
+) -> None:
+    result = run(transport, _BadScalar(), steps=3)
+    assert result.steps == 3
+    assert result.ego.positions[-1, 0] > 0.0  # the plans still arrived
+
+
 def test_fake_loop_reads_a_server_without_the_vehicle_service_as_no_command(
     transport: Transport,
 ) -> None:

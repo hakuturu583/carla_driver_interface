@@ -12,13 +12,12 @@ from typing import Any, Optional
 import numpy as np
 import pytest
 
-pytest.importorskip("t4_e2e_devkit.serialization.protobuf")
+pytest.importorskip("t4_e2e_devkit.driver")
 
 from t4_e2e_devkit.common.ego import EgoSequence  # noqa: E402
 from t4_e2e_devkit.common.scene import SceneMetadata, T4Scene  # noqa: E402
 from t4_e2e_devkit.common.trajectory import Trajectory as T4Trajectory  # noqa: E402
 from t4_e2e_devkit.driver import DriverOutput  # noqa: E402
-from t4_e2e_devkit.serialization.protobuf import to_proto  # noqa: E402
 from t4_e2e_devkit.vendor.nuplan.trajectory.trajectory_sampling import (  # noqa: E402
     TrajectorySampling,
 )
@@ -30,7 +29,11 @@ from carla_driver_interface.driver import (  # noqa: E402
     TurnIndicator,
 )
 from carla_driver_interface.protocol import CarlaRendererData  # noqa: E402
-from carla_driver_interface.t4_scene import T4_MAP_FORMAT, T4SceneDriver  # noqa: E402
+from carla_driver_interface.t4_scene import (  # noqa: E402
+    T4_MAP_FORMAT,
+    T4SceneDriver,
+    scene_proto,
+)
 
 
 class _Model:
@@ -68,7 +71,7 @@ def _scene_bytes(rows: int = 3) -> bytes:
         current_index=rows - 1,
         ego=EgoSequence(poses=poses),
     )
-    return to_proto(scene).SerializeToString()
+    return scene_proto().to_proto(scene).SerializeToString()
 
 
 def _session(uuid: str = "s1") -> SessionState:
@@ -147,12 +150,11 @@ def test_a_drive_without_a_scene_is_refused(renderer_data: Any) -> None:
 def test_the_map_resource_is_read_once_per_map(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from t4_e2e_devkit.serialization import protobuf
-    from t4_e2e_devkit.serialization.protobuf import MapResourceStore, t4_scene_pb2
+    protobuf = scene_proto()
 
     read: list = []
 
-    class _Store(MapResourceStore):
+    class _Store(protobuf.MapResourceStore):  # type: ignore[name-defined]
         def register(self, resource: Any) -> str:
             read.append(resource.sha256)
             return resource.sha256
@@ -160,7 +162,9 @@ def test_the_map_resource_is_read_once_per_map(
     monkeypatch.setattr(protobuf, "MapResourceStore", _Store)
     path = tmp_path / "t4_map.pb"
     path.write_bytes(
-        t4_scene_pb2.MapResource(sha256="abc", data=b"<osm/>").SerializeToString()
+        protobuf.t4_scene_pb2.MapResource(
+            sha256="abc", data=b"<osm/>"
+        ).SerializeToString()
     )
     map_files: Any = SimpleNamespace(map_id="town-1", path=path)
 
@@ -203,7 +207,7 @@ def test_a_map_the_store_let_go_is_registered_again(tmp_path: Path) -> None:
             raise KeyError("map resource is not registered: abc")
         return "the scene"
 
-    import t4_e2e_devkit.serialization.protobuf as protobuf
+    protobuf = scene_proto()
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(protobuf, "from_proto", from_proto)

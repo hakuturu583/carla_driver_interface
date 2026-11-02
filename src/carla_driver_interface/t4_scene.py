@@ -35,6 +35,21 @@ if TYPE_CHECKING:
 
 __all__ = ["T4_MAP_FORMAT", "T4SceneDriver"]
 
+
+def scene_proto() -> Any:
+    """The devkit's T4Scene protobuf codec.
+
+    ``t4_scene_proto`` since tier4/e2e-devkit#91, which moved it out of
+    ``t4_e2e_devkit.serialization.protobuf``; the old home is still read so an
+    older devkit keeps working.
+    """
+    try:
+        import t4_scene_proto
+    except ImportError:
+        from t4_e2e_devkit.serialization import protobuf as t4_scene_proto
+    return t4_scene_proto
+
+
 logger = logging.getLogger(__name__)
 
 #: The map set format holding the scene's map resource: a serialized
@@ -111,19 +126,18 @@ class T4SceneDriver(BaseDriver):
                 f"{self.name} plans from T4Scenes, and this drive carries none: run the "
                 "runtime with driver.t4_scene on"
             )
-        from t4_e2e_devkit.serialization.protobuf import from_proto, t4_scene_pb2
-
-        message = t4_scene_pb2.T4Scene.FromString(payload)
+        codec = scene_proto()
+        message = codec.t4_scene_pb2.T4Scene.FromString(payload)
         store = self._map_store(ctx.map)
         try:
-            return from_proto(message, map_resources=store)
+            return codec.from_proto(message, map_resources=store)
         except KeyError as error:
             # The store keeps the most recent maps; one it let go is
             # registered again from the copy read.
             if ctx.map is None or "not registered" not in str(error):
                 raise
             store.register(self._read[ctx.map.map_id])
-            return from_proto(message, map_resources=store)
+            return codec.from_proto(message, map_resources=store)
 
     def result(self, output: Any, ctx: DriveContext) -> DriveResult:
         """A T4 driver's ``DriverOutput`` as the egodriver's result, in the rig frame."""
@@ -161,13 +175,12 @@ class T4SceneDriver(BaseDriver):
         """
         if map_files is None:
             return None
-        from t4_e2e_devkit.serialization.protobuf import MapResourceStore, t4_scene_pb2
-
+        codec = scene_proto()
         if self._store is None:
             # Room for every map a server is likely to meet.
-            self._store = MapResourceStore(max_maps=64)
+            self._store = codec.MapResourceStore(max_maps=64)
         if map_files.map_id not in self._read:
-            resource = t4_scene_pb2.MapResource.FromString(
+            resource = codec.t4_scene_pb2.MapResource.FromString(
                 Path(map_files.path).read_bytes()
             )
             self._store.register(resource)

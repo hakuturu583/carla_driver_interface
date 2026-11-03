@@ -1,7 +1,8 @@
 """A policy fed T4Scenes: :class:`T4SceneDriver`, a :class:`BaseDriver` like any other.
 
 tier4/e2e-devkit wraps a trained model as a *T4 driver*
-(``t4_e2e_devkit.driver.AbstractT4Driver``): a ``T4Scene`` goes in, an
+(``t4_e2e_devkit.driver.T4Driver``; ``AbstractT4Driver`` before it): a
+``T4Scene`` goes in, an
 ego-frame plan comes out, and the model is fed exactly the window it was
 trained on.  :class:`T4SceneDriver` puts one behind the egodriver contract.
 The runtime sends the rollout so far as a scene with every drive
@@ -61,7 +62,8 @@ class T4SceneDriver(BaseDriver):
     """Drives with a devkit T4 driver over the scene the runtime sends.
 
     Args:
-        scene_driver: The model, as a ``t4_e2e_devkit.driver.AbstractT4Driver``.
+        scene_driver: The model, as a ``t4_e2e_devkit.driver.T4Driver`` (or an
+            ``AbstractT4Driver`` of an earlier devkit).
         map_dir: Your copy of the runtime's ``driver.map_dir``, where the scene's
             map resource is (the ``t4`` format); ``None`` for a model that reads
             no map.
@@ -89,7 +91,12 @@ class T4SceneDriver(BaseDriver):
     ) -> None:
         self.scene_driver = scene_driver
         self.map_dir = map_dir
-        self.name = name if name is not None else str(scene_driver.name())
+        if name is None:
+            # A T4Driver names itself with an attribute; an AbstractT4Driver
+            # of an earlier devkit, with a method.
+            named = scene_driver.name
+            name = named() if callable(named) else named
+        self.name = str(name)
         #: The map resources registered, one store for every map.
         self._store: Any = None
         #: Each map set's resource, read once, by map id.

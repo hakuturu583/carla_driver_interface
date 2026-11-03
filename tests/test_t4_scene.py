@@ -104,6 +104,14 @@ def test_it_is_a_base_driver_named_by_its_model() -> None:
     assert T4SceneDriver(_Model(), name="other").name == "other"
 
 
+def test_a_t4driver_is_named_by_its_name_attribute() -> None:
+    class _Named(_Model):
+        # t4_e2e_devkit.driver.T4Driver: a dataclass field, not a method.
+        name = "attribute"  # type: ignore[assignment]
+
+    assert T4SceneDriver(_Named()).name == "attribute"
+
+
 def test_the_scene_reaches_the_model_under_the_session() -> None:
     model = _Model()
     driver = T4SceneDriver(model)

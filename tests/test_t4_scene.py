@@ -34,7 +34,6 @@ from carla_driver_interface.t4_scene import (  # noqa: E402
     scene_proto,
 )
 
-
 try:
     # A devkit Driver's output (tier4/e2e-devkit#141): the plan in its planner_output.
     from t4_e2e_devkit.agents.base.outputs import (  # noqa: E402
@@ -44,7 +43,7 @@ try:
 
     PLANNER_OUTPUT = True
 except ImportError:  # an earlier devkit's T4Driver: the plan and its extras
-    from t4_e2e_devkit.driver import DriverOutput  # type: ignore[no-redef]  # noqa: E402
+    from t4_e2e_devkit.driver import DriverOutput  # type: ignore[no-redef]
 
     PLANNER_OUTPUT = False
 
@@ -209,10 +208,14 @@ def test_a_planner_outputs_indicator_is_the_command(
 ) -> None:
     class _Driver(_Model):
         def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> Any:
-            planned = SimpleNamespace(trajectory=_plan(), turn_indicator=public, extra={})
+            planned = SimpleNamespace(
+                trajectory=_plan(), turn_indicator=public, extra={}
+            )
             return SimpleNamespace(planner_output=planned)
 
-    assert T4SceneDriver(_Driver()).drive(_ctx(_scene_bytes())).turn_indicator == commanded
+    assert (
+        T4SceneDriver(_Driver()).drive(_ctx(_scene_bytes())).turn_indicator == commanded
+    )
 
 
 def test_a_control_only_output_is_refused() -> None:

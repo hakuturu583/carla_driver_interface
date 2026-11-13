@@ -53,6 +53,13 @@ def scene_proto() -> Any:
 
 logger = logging.getLogger(__name__)
 
+#: The devkit's public turn indicators that are commands here: disabled, left
+#: and right, the same values as :class:`TurnIndicator`'s. Unknown and hazard
+#: are no command.
+_COMMANDS = frozenset(
+    (TurnIndicator.DISABLE, TurnIndicator.ENABLE_LEFT, TurnIndicator.ENABLE_RIGHT)
+)
+
 #: The map set format holding the scene's map resource: a serialized
 #: ``t4_e2e_devkit`` ``MapResource`` (Lanelet2 OSM in Autoware's ``map`` frame).
 T4_MAP_FORMAT = "t4"
@@ -71,10 +78,14 @@ class T4SceneDriver(BaseDriver):
 
     The plan the T4 driver returns is in the ego frame of the scene's current
     row, the rig at ``time_now_us``; pose ``i`` is ``(i + 1)`` sampling
-    intervals later.  Its ``extras`` may carry ``turn_indicator`` (an
-    :class:`TurnIndicator` value) and ``debug_scalars`` (a ``str -> float``
-    mapping), which the result passes on; the servicer drops a value of
-    either it cannot send, keeping the plan.
+    intervals later.  A devkit ``Driver`` (tier4/e2e-devkit#141) returns it as
+    its ``DriverOutput``'s ``planner_output``: the turn indicator is that
+    output's ``turn_indicator`` (the devkit's public vocabulary, whose
+    disabled / left / right are :class:`TurnIndicator`'s values; ``None`` or
+    unknown is no command), and ``debug_scalars`` (a ``str -> float``
+    mapping) its ``extra``'s.  An earlier ``T4Driver``'s output carries both
+    in its ``extras``.  The result passes them on; the servicer drops a value
+    of either it cannot send, keeping the plan.
 
     One drive at a time: a T4 driver holds a model and per-session state that
     concurrent drives would share.
@@ -148,7 +159,7 @@ class T4SceneDriver(BaseDriver):
 
     def result(self, output: Any, ctx: DriveContext) -> DriveResult:
         """A T4 driver's ``DriverOutput`` as the egodriver's result, in the rig frame."""
-        trajectory = output.trajectory
+        trajectory, extras, indicator = self._plan_of(output)
         poses = np.asarray(trajectory.poses, dtype=np.float64)
         if poses.ndim != 2 or poses.shape[1] != 3:
             raise ValueError(
@@ -167,12 +178,33 @@ class T4SceneDriver(BaseDriver):
             plan.append(
                 ctx.time_now_us + index * step_us, Pose.from_xyz_yaw(x, y, 0.0, yaw)
             )
-        extras = output.extras or {}
         return DriveResult(
             trajectory_in_rig=plan,
-            turn_indicator=extras.get("turn_indicator", TurnIndicator.NO_COMMAND),
+            turn_indicator=indicator,
             debug_scalars=dict(extras.get("debug_scalars") or {}),
         )
+
+    def _plan_of(self, output: Any) -> tuple[Any, Dict[str, Any], Any]:
+        """``(trajectory, extras, turn indicator)`` of either devkit's output."""
+        if not hasattr(output, "planner_output"):
+            # An earlier T4Driver's: the plan, and both values in its extras.
+            extras = output.extras or {}
+            return (
+                output.trajectory,
+                extras,
+                extras.get("turn_indicator", TurnIndicator.NO_COMMAND),
+            )
+        planned = output.planner_output
+        if planned is None:
+            raise ValueError(
+                f"{self.name} returned no plan: the egodriver contract carries plans, "
+                "not control commands"
+            )
+        public = planned.turn_indicator
+        commanded = TurnIndicator.NO_COMMAND
+        if public is not None and int(public) in _COMMANDS:
+            commanded = TurnIndicator(int(public))
+        return planned.trajectory, dict(planned.extra or {}), commanded
 
     def _map_store(self, map_files: Optional["MapFiles"]) -> Any:
         """The store holding the step's map resource; ``None`` without a map set.

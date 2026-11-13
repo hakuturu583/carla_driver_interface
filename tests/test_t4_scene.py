@@ -12,12 +12,11 @@ from typing import Any, Optional
 import numpy as np
 import pytest
 
-pytest.importorskip("t4_e2e_devkit.driver")
+pytest.importorskip("t4_e2e_devkit.common.scene")
 
 from t4_e2e_devkit.common.ego import EgoSequence  # noqa: E402
 from t4_e2e_devkit.common.scene import SceneMetadata, T4Scene  # noqa: E402
 from t4_e2e_devkit.common.trajectory import Trajectory as T4Trajectory  # noqa: E402
-from t4_e2e_devkit.driver import DriverOutput  # noqa: E402
 from t4_e2e_devkit.vendor.nuplan.trajectory.trajectory_sampling import (  # noqa: E402
     TrajectorySampling,
 )
@@ -36,6 +35,38 @@ from carla_driver_interface.t4_scene import (  # noqa: E402
 )
 
 
+try:
+    # A devkit Driver's output (tier4/e2e-devkit#141): the plan in its planner_output.
+    from t4_e2e_devkit.agents.base.outputs import (  # noqa: E402
+        DriverOutput,
+        PlannerOutput,
+    )
+
+    PLANNER_OUTPUT = True
+except ImportError:  # an earlier devkit's T4Driver: the plan and its extras
+    from t4_e2e_devkit.driver import DriverOutput  # type: ignore[no-redef]  # noqa: E402
+
+    PLANNER_OUTPUT = False
+
+
+def _plan() -> T4Trajectory:
+    poses = np.array([[1.0, 0.0, 0.0], [2.0, 0.5, 0.25]], dtype=np.float32)
+    sampling = TrajectorySampling(num_poses=2, interval_length=0.5)
+    return T4Trajectory(poses=poses, trajectory_sampling=sampling)
+
+
+def _output(extras: dict) -> Any:
+    """The output this devkit's driver returns, carrying *extras* as it can."""
+    if not PLANNER_OUTPUT:
+        return DriverOutput(trajectory=_plan(), extras=extras)
+    extra = {k: v for k, v in extras.items() if k != "turn_indicator"}
+    return DriverOutput(
+        planner_output=PlannerOutput(
+            _plan(), turn_indicator=extras.get("turn_indicator"), extra=extra
+        )
+    )
+
+
 class _Model:
     """What T4SceneDriver asks of a devkit T4 driver, recorded."""
 
@@ -52,14 +83,9 @@ class _Model:
     def close_session(self, session_id: str) -> None:
         self.calls.append(("close", session_id))
 
-    def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> DriverOutput:
+    def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> Any:
         self.calls.append(("drive", session_id, scene))
-        poses = np.array([[1.0, 0.0, 0.0], [2.0, 0.5, 0.25]], dtype=np.float32)
-        sampling = TrajectorySampling(num_poses=2, interval_length=0.5)
-        return DriverOutput(
-            trajectory=T4Trajectory(poses=poses, trajectory_sampling=sampling),
-            extras=self.extras,
-        )
+        return _output(self.extras)
 
 
 def _scene_bytes(rows: int = 3) -> bytes:
@@ -69,7 +95,11 @@ def _scene_bytes(rows: int = 3) -> bytes:
         scene_metadata=SceneMetadata(scene_id="rollout"),
         timestamps_ns=np.arange(rows, dtype=np.int64) * 100_000_000,
         current_index=rows - 1,
-        ego=EgoSequence(poses=poses),
+        ego=(
+            EgoSequence.from_planar(poses=poses)
+            if hasattr(EgoSequence, "from_planar")
+            else EgoSequence(poses=poses)
+        ),
     )
     return scene_proto().to_proto(scene).SerializeToString()
 
@@ -147,6 +177,51 @@ def test_the_models_extras_carry_the_indicator_and_scalars() -> None:
 
     assert result.turn_indicator == TurnIndicator.ENABLE_LEFT
     assert result.debug_scalars == {"lanes": 3.0}
+
+
+def test_an_earlier_t4drivers_extras_carry_the_indicator_and_scalars() -> None:
+    class _Earlier(_Model):
+        def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> Any:
+            return SimpleNamespace(
+                trajectory=_plan(),
+                extras={"turn_indicator": 3, "debug_scalars": {"lanes": 2}},
+            )
+
+    result = T4SceneDriver(_Earlier()).drive(_ctx(_scene_bytes()))
+
+    assert result.turn_indicator == TurnIndicator.ENABLE_RIGHT
+    assert result.debug_scalars == {"lanes": 2.0}
+
+
+@pytest.mark.parametrize(
+    ("public", "commanded"),
+    [
+        (None, TurnIndicator.NO_COMMAND),
+        (0, TurnIndicator.NO_COMMAND),  # unknown
+        (1, TurnIndicator.DISABLE),
+        (2, TurnIndicator.ENABLE_LEFT),
+        (3, TurnIndicator.ENABLE_RIGHT),
+        (4, TurnIndicator.NO_COMMAND),  # hazard: no such command
+    ],
+)
+def test_a_planner_outputs_indicator_is_the_command(
+    public: Optional[int], commanded: TurnIndicator
+) -> None:
+    class _Driver(_Model):
+        def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> Any:
+            planned = SimpleNamespace(trajectory=_plan(), turn_indicator=public, extra={})
+            return SimpleNamespace(planner_output=planned)
+
+    assert T4SceneDriver(_Driver()).drive(_ctx(_scene_bytes())).turn_indicator == commanded
+
+
+def test_a_control_only_output_is_refused() -> None:
+    class _Control(_Model):
+        def drive(self, scene: T4Scene, session_id: Optional[str] = None) -> Any:
+            return SimpleNamespace(planner_output=None)
+
+    with pytest.raises(ValueError, match="no plan"):
+        T4SceneDriver(_Control()).drive(_ctx(_scene_bytes()))
 
 
 @pytest.mark.parametrize("renderer_data", [None, CarlaRendererData()])
